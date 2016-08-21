@@ -346,64 +346,9 @@ tsfix_backlog_diff(tsfix_t *tf)
 static void
 recover_pts(tsfix_t *tf, tfstream_t *tfs, th_pkt_t *pkt)
 {
-  th_pktref_t *srch;
-  int total;
-
   pktref_enqueue(&tf->tf_ptsq, pkt);
-
   while((pkt = pktref_get_first(&tf->tf_ptsq)) != NULL) {
-    
     tfs = tfs_find(tf, pkt);
-
-    switch(tfs->tfs_type) {
-
-    case SCT_MPEG2VIDEO:
-
-      switch(pkt->pkt_frametype) {
-      case PKT_B_FRAME:
-	/* B-frames have same PTS as DTS, pass them on */
-	tvhtrace(LS_TSFIX, "%-12s PTS b-frame set to %"PRId64" (old %"PRId64")",
-		    streaming_component_type2txt(tfs->tfs_type),
-		    pkt->pkt_dts, pkt->pkt_pts);
-	pkt->pkt_pts = pkt->pkt_dts;
-	break;
-      
-      case PKT_I_FRAME:
-      case PKT_P_FRAME:
-	/* Presentation occures at DTS of next I or P frame,
-	   try to find it */
-        total = 0;
-	PKTREF_FOREACH(srch, &tf->tf_ptsq) {
-	  if (pkt->pkt_componentindex != tfs->tfs_index)
-	    continue;
-          total++;
-	  if (srch->pr_pkt->pkt_frametype <= PKT_P_FRAME &&
-	      pts_is_greater_or_equal(pkt->pkt_dts, srch->pr_pkt->pkt_dts) > 0 &&
-	      pts_diff(pkt->pkt_dts, srch->pr_pkt->pkt_dts) < 10 * 90000) {
-	    tvhtrace(LS_TSFIX, "%-12s PTS *-frame set to %"PRId64" (old %"PRId64"), DTS %"PRId64,
-			streaming_component_type2txt(tfs->tfs_type),
-			srch->pr_pkt->pkt_dts, pkt->pkt_pts, pkt->pkt_dts);
-	    pkt->pkt_pts = srch->pr_pkt->pkt_dts;
-	    break;
-	  }
-	  
-        }
-	if (srch == NULL) {
-	  if (total < 50) {
-            /* return packet back to tf_ptsq */
-	    pktref_insert_head(&tf->tf_ptsq, pkt);
-          } else {
-            tsfix_packet_drop(tfs, pkt, "mpeg2video overflow");
-          }
-          return; /* not arrived yet or invalid, wait */
-        }
-      }
-      break;
-
-    default:
-      break;
-    }
-
     normalize_ts(tf, tfs, pkt, 1);
   }
 }
@@ -441,7 +386,7 @@ tsfix_input_packet(tsfix_t *tf, streaming_message_t *sm)
   tfstream_t *tfs = tfs_find(tf, pkt), *tfs2;
   streaming_msg_free(sm);
   int64_t diff, diff2, threshold;
-  
+
   if(tfs == NULL || mclk() < tf->tf_start_time) {
     pkt_ref_dec(pkt);
     return;

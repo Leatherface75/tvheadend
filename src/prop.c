@@ -99,7 +99,7 @@ prop_write_values
     if (!f) continue;
 
     /* Ignore */
-    u32 = p->get_opts ? p->get_opts(obj) : p->opts;
+    u32 = p->get_opts ? p->get_opts(obj, p->opts) : p->opts;
     if(u32 & optmask) continue;
 
     /* Sanity check */
@@ -259,7 +259,7 @@ prop_read_value
   char buf[24];
 
   /* Ignore */
-  u32 = p->get_opts ? p->get_opts(obj) : p->opts;
+  u32 = p->get_opts ? p->get_opts(obj, p->opts) : p->opts;
   if (u32 & optmask) return;
   if (p->type == PT_NONE) return;
 
@@ -472,7 +472,7 @@ prop_serialize_value
   }
 
   /* Options */
-  opts = pl->get_opts ? pl->get_opts(obj) : pl->opts;
+  opts = pl->get_opts ? pl->get_opts(obj, pl->opts) : pl->opts;
   if (opts & PO_RDONLY)
     htsmsg_add_bool(m, "rdonly", 1);
   if (opts & PO_NOSAVE)

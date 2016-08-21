@@ -114,7 +114,7 @@ tvhlog_subsys_t tvhlog_subsystems[] = {
   [LS_FASTSCAN]      = { "fastscan",      N_("Fastscan DVB") },
   [LS_PARSER]        = { "parser",        N_("MPEG-TS Parser") },
   [LS_TS]            = { "TS",            N_("Transport Stream") },
-  [LS_GLOBALHEADERS] = { "globalheaders", N_("Global Headers") }, 
+  [LS_GLOBALHEADERS] = { "globalheaders", N_("Global Headers") },
   [LS_TSFIX]         = { "tsfix",         N_("Time Stamp Fix") },
   [LS_HEVC]          = { "hevc",          N_("HEVC - H.265") },
   [LS_MUXER]         = { "muxer",         N_("Muxer") },
@@ -151,7 +151,7 @@ tvhlog_subsys_t tvhlog_subsystems[] = {
   [LS_EN50494]       = { "en50494",       N_("Unicable (EN50494)") },
   [LS_SATIP]         = { "satip",         N_("SAT>IP Client") },
   [LS_SATIPS]        = { "satips",        N_("SAT>IP Server") },
-  [LS_TVHDHOMERUN]   = { "tvhdhomerun",   N_("TVHDHomeRun Client") }, 
+  [LS_TVHDHOMERUN]   = { "tvhdhomerun",   N_("TVHDHomeRun Client") },
   [LS_PSIP]          = { "psip",          N_("ATSC PSIP EPG") },
   [LS_OPENTV]        = { "opentv",        N_("OpenTV EPG") },
   [LS_PYEPG]         = { "pyepg",         N_("PyEPG Import") },
@@ -160,6 +160,8 @@ tvhlog_subsys_t tvhlog_subsystems[] = {
   [LS_TIMESHIFT]     = { "timeshift",     N_("Timeshift") },
   [LS_SCANFILE]      = { "scanfile",      N_("Scanfile") },
   [LS_TSFILE]        = { "tsfile",        N_("MPEG-TS File") },
+  [LS_CODEC]         = { "codec",         N_("Codec") },
+  [LS_VAAPI]         = { "vaapi",         N_("VA-API") },
 };
 
 static void
@@ -285,7 +287,7 @@ tvhlog_process
       const char *ltxt = logtxtmeta[msg->severity][0];
       const char *sgr  = logtxtmeta[msg->severity][1];
       const char *sgroff;
-    
+
       if (options & TVHLOG_OPT_DECORATE)
         sgroff = "\033[0m";
       else {
@@ -306,7 +308,7 @@ tvhlog_process
         fprintf(*fp, "%s [%7s]:%s\n", t, ltxt, msg->msg);
     }
   }
-  
+
   free(msg->msg);
   free(msg);
 }
@@ -347,7 +349,7 @@ tvhlog_thread ( void *p )
         path = NULL;
       }
     }
-    options  = tvhlog_options; 
+    options  = tvhlog_options;
     pthread_mutex_unlock(&tvhlog_mutex);
     tvhlog_process(msg, options, &fp, path);
     pthread_mutex_lock(&tvhlog_mutex);
@@ -519,7 +521,7 @@ tvhlog_backtrace_printf(const char *fmt, ...)
 /*
  * Initialise
  */
-void 
+void
 tvhlog_init ( int level, int options, const char *path )
 {
   tvhlog_level   = level;

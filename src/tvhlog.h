@@ -53,7 +53,7 @@ extern pthread_mutex_t  tvhlog_mutex;
 extern tvhlog_subsys_t  tvhlog_subsystems[];
 
 /* Initialise */
-void tvhlog_init       ( int level, int options, const char *path ); 
+void tvhlog_init       ( int level, int options, const char *path );
 void tvhlog_start      ( void );
 void tvhlog_end        ( void );
 void tvhlog_set_debug  ( const char *subsys );
@@ -189,6 +189,8 @@ enum {
   LS_TIMESHIFT,
   LS_SCANFILE,
   LS_TSFILE,
+  LS_CODEC,
+  LS_VAAPI,
   LS_LAST     /* keep this last */
 };
 

@@ -67,7 +67,7 @@ streaming_message_data_size(streaming_message_t *sm)
 /**
  *
  */
-static void 
+static void
 streaming_queue_deliver(void *opauqe, streaming_message_t *sm)
 {
   streaming_queue_t *sq = opauqe;
@@ -407,7 +407,7 @@ streaming_code2txt(int code)
   switch(code) {
   case SM_CODE_OK:
     return N_("OK");
-    
+
   case SM_CODE_SOURCE_RECONFIGURED:
     return N_("Source reconfigured");
   case SM_CODE_BAD_SOURCE:
@@ -472,11 +472,11 @@ streaming_start_t *
 streaming_start_copy(const streaming_start_t *src)
 {
   int i;
-  size_t siz = sizeof(streaming_start_t) + 
+  size_t siz = sizeof(streaming_start_t) +
     sizeof(streaming_start_component_t) * src->ss_num_components;
-  
+
   streaming_start_t *dst = malloc(siz);
-  
+
   memcpy(dst, src, siz);
   service_source_info_copy(&dst->ss_si, &src->ss_si);
 
@@ -528,6 +528,8 @@ static struct strtab streamtypetab[] = {
   { "VORBIS",     SCT_VORBIS },
   { "HEVC",       SCT_HEVC },
   { "VP9",        SCT_VP9 },
+  { "THEORA",     SCT_THEORA },
+  { "OPUS",       SCT_OPUS },
 };
 
 /**
