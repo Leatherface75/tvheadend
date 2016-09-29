@@ -1666,29 +1666,6 @@ const idclass_t profile_transcode_class =
 };
 
 static int
-profile_transcode_can_share(profile_chain_t *prch,
-                            profile_chain_t *joiner)
-{
-  profile_transcode_t *pro1 = (profile_transcode_t *)prch->prch_pro;
-  profile_transcode_t *pro2 = (profile_transcode_t *)joiner->prch_pro;
-  if (pro1 == pro2)
-    return 1;
-  if (!idnode_is_instance(&pro2->pro_id, &profile_transcode_class))
-    return 0;
-  /*
-   * Do full params check here, note that profiles might differ
-   * only in the muxer setup.
-   */
-  if (strcmp(pro1->pro_vcodec ?: "", pro2->pro_vcodec ?: ""))
-    return 0;
-  if (strcmp(pro1->pro_acodec ?: "", pro2->pro_acodec ?: ""))
-    return 0;
-  if (strcmp(pro1->pro_scodec ?: "", pro2->pro_scodec ?: ""))
-    return 0;
-  return 1;
-}
-
-static int
 profile_transcode_work(profile_chain_t *prch,
                        streaming_target_t *dst,
                        uint32_t timeshift_period, int flags)
@@ -1700,8 +1677,6 @@ profile_transcode_work(profile_chain_t *prch,
   prsh = profile_sharer_find(prch);
   if (!prsh)
     goto fail;
-
-  prch->prch_can_share = profile_transcode_can_share;
 
   profiles[AVMEDIA_TYPE_VIDEO] = pro->pro_vcodec ?: "";
   profiles[AVMEDIA_TYPE_AUDIO] = pro->pro_acodec ?: "";
