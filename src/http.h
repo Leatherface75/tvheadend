@@ -156,7 +156,6 @@ typedef struct http_connection {
   struct config_head *hc_user_config;
 
   int hc_no_output;
-  int hc_logout_cookie;
   int hc_shutdown;
   uint64_t hc_cseq;
   char *hc_session;
@@ -227,6 +226,7 @@ typedef struct http_path {
   void *hp_opaque;
   http_callback_t *hp_callback;
   int hp_len;
+  int hp_no_verification;
   uint32_t hp_accessmask;
   http_path_modify_t *hp_path_modify;
 } http_path_t;
@@ -245,8 +245,6 @@ void http_server_done(void);
 int http_access_verify(http_connection_t *hc, int mask);
 int http_access_verify_channel(http_connection_t *hc, int mask,
                                struct channel *ch);
-
-void http_deescape(char *s);
 
 void http_parse_args(http_arg_list_t *list, char *args);
 
@@ -316,6 +314,7 @@ struct http_client {
   char        *hc_location;
   uint8_t      hc_running;	/* outside hc_mutex */
   uint8_t      hc_shutdown_wait;/* outside hc_mutex */
+  int          hc_refcnt;       /* callback protection - outside hc_mutex */
   int          hc_redirects;
   int          hc_result;
   int          hc_shutdown:1;

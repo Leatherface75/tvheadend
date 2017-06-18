@@ -66,18 +66,20 @@ dvr_rec_subscribe(dvr_entry_t *de)
   int weight;
   profile_t *pro;
   profile_chain_t *prch;
-  struct sockaddr sa;
+  struct sockaddr_storage sa;
   access_t *aa;
   uint32_t rec_count, net_count;
-  int c1, c2;
+  int pri, c1, c2;
 
   assert(de->de_s == NULL);
   assert(de->de_chain == NULL);
 
-  if(de->de_pri >= 0 && de->de_pri < ARRAY_SIZE(prio2weight))
-    weight = prio2weight[de->de_pri];
-  else
-    weight = 300;
+  pri = de->de_pri;
+  if(pri == DVR_PRIO_NOTSET || pri == DVR_PRIO_DEFAULT)
+    pri = de->de_config->dvr_pri;
+  if(pri < 0 || pri >= ARRAY_SIZE(prio2weight))
+    pri = DVR_PRIO_NORMAL;
+  weight = prio2weight[pri];
 
   snprintf(buf, sizeof(buf), "DVR: %s", lang_str_get(de->de_title, NULL));
 
@@ -90,7 +92,7 @@ dvr_rec_subscribe(dvr_entry_t *de)
     tvherror(LS_DVR, "unable to find access (owner '%s', creator '%s')",
              de->de_owner, de->de_creator);
     return -EPERM;
- }
+  }
 
   if (aa->aa_conn_limit || aa->aa_conn_limit_dvr) {
     rec_count = dvr_usage_count(aa);
@@ -115,12 +117,12 @@ dvr_rec_subscribe(dvr_entry_t *de)
   if (profile_chain_open(prch, &de->de_config->dvr_muxcnf, 0, 0)) {
     profile_chain_close(prch);
     tvherror(LS_DVR, "unable to create new channel streaming chain '%s' for '%s', using default",
-             profile_get_name(pro), channel_get_name(de->de_channel));
+             profile_get_name(pro), channel_get_name(de->de_channel, channel_blank_name));
     pro = profile_find_by_name(NULL, NULL);
     profile_chain_init(prch, pro, de->de_channel);
     if (profile_chain_open(prch, &de->de_config->dvr_muxcnf, 0, 0)) {
       tvherror(LS_DVR, "unable to create channel streaming default chain '%s' for '%s'",
-               profile_get_name(pro), channel_get_name(de->de_channel));
+               profile_get_name(pro), channel_get_name(de->de_channel, channel_blank_name));
       profile_chain_close(prch);
       free(prch);
       return -EINVAL;
@@ -132,7 +134,7 @@ dvr_rec_subscribe(dvr_entry_t *de)
 					      NULL, NULL, NULL, NULL);
   if (de->de_s == NULL) {
     tvherror(LS_DVR, "unable to create new channel subcription for '%s' profile '%s'",
-             channel_get_name(de->de_channel), profile_get_name(pro));
+             channel_get_name(de->de_channel, channel_blank_name), profile_get_name(pro));
     profile_chain_close(prch);
     free(prch);
     return -EINVAL;
@@ -155,15 +157,23 @@ void
 dvr_rec_unsubscribe(dvr_entry_t *de)
 {
   profile_chain_t *prch = de->de_chain;
+  char *postproc = NULL;
 
   assert(de->de_s != NULL);
   assert(prch != NULL);
+
+  de->de_in_unsubscribe = 1;
 
   streaming_target_deliver(prch->prch_st, streaming_msg_create(SMT_EXIT));
 
   atomic_add(&de->de_thread_shutdown, 1);
 
-  pthread_join(de->de_thread, NULL);
+  pthread_join(de->de_thread, (void **)&postproc);
+
+  if (prch->prch_muxer)
+    dvr_thread_epilog(de, postproc);
+
+  free(postproc);
 
   subscription_unsubscribe(de->de_s, UNSUBSCRIBE_FINAL);
   de->de_s = NULL;
@@ -173,6 +183,8 @@ dvr_rec_unsubscribe(dvr_entry_t *de)
   free(prch);
 
   dvr_vfs_refresh_entry(de);
+
+  de->de_in_unsubscribe = 0;
 }
 
 /**
@@ -415,6 +427,12 @@ dvr_sub_stop(const char *id, const char *fmt, const void *aux, char *tmp, size_t
   return dvr_do_prefix(id, fmt, buf, tmp, tmplen);
 }
 
+static const char *
+dvr_sub_comment(const char *id, const char *fmt, const void *aux, char *tmp, size_t tmplen)
+{
+  return dvr_do_prefix(id, fmt, ((dvr_entry_t *)aux)->de_comment, tmp, tmplen);
+}
+
 static htsstr_substitute_t dvr_subs_entry[] = {
   { .id = "?t",  .getval = dvr_sub_title },
   { .id = "? t", .getval = dvr_sub_title },
@@ -569,6 +587,7 @@ static htsstr_substitute_t dvr_subs_postproc_entry[] = {
   { .id = "E",  .getval = dvr_sub_stop },
   { .id = "r",  .getval = dvr_sub_errors },
   { .id = "R",  .getval = dvr_sub_data_errors },
+  { .id = "Z",  .getval = dvr_sub_comment },
   { .id = NULL, .getval = NULL }
 };
 
@@ -602,8 +621,8 @@ dvr_sub_basic_info(const char *id, const char *fmt, const void *aux, char *tmp, 
   tmp[0] = '\0';
   HTSMSG_FOREACH(f, info) {
     if (!(e = htsmsg_field_get_map(f))) continue;
-    if ((s = htsmsg_get_str(e, "type")) != NULL) continue;
-    tvh_strlcatf(tmp, tmplen, l, "%s%s", l > 0 ? "," : "", s);
+    if ((s = htsmsg_get_str(e, "type")) != NULL)
+      tvh_strlcatf(tmp, tmplen, l, "%s%s", l > 0 ? "," : "", s);
   }
   return tmp;
 }
@@ -881,7 +900,7 @@ dvr_notify(dvr_entry_t *de)
   if (de->de_last_notify + sec2mono(5) < mclk()) {
     idnode_notify_changed(&de->de_id);
     de->de_last_notify = mclk();
-    htsp_dvr_entry_update(de);
+    htsp_dvr_entry_update_stats(de);
   }
 }
 
@@ -905,7 +924,7 @@ dvr_rec_start(dvr_entry_t *de, const streaming_start_t *ss)
   const source_info_t *si = &ss->ss_si;
   streaming_start_t *ss_copy;
   const streaming_start_component_t *ssc;
-  char res[11], asp[6], sr[6], ch[7];
+  char res[14], asp[14], sr[6], ch[7];
   dvr_config_t *cfg = de->de_config;
   profile_chain_t *prch = de->de_chain;
   htsmsg_t *info, *e;
@@ -921,6 +940,11 @@ dvr_rec_start(dvr_entry_t *de, const streaming_start_t *ss)
   if (!prch) {
     dvr_rec_fatal_error(de, "Unable to determine stream profile");
     return -1;
+  }
+
+  if (!dvr_vfs_rec_start_check(cfg)) {
+    dvr_rec_fatal_error(de, "Not enough free disk space");
+    return SM_CODE_NO_SPACE;
   }
 
   if (!(muxer = prch->prch_muxer)) {
@@ -998,6 +1022,8 @@ dvr_rec_start(dvr_entry_t *de, const streaming_start_t *ss)
 
     if(SCT_ISAUDIO(ssc->ssc_type)) {
       htsmsg_add_u32(e, "audio_type", ssc->ssc_audio_type);
+      if(ssc->ssc_audio_version)
+        htsmsg_add_u32(e, "audio_version", ssc->ssc_audio_version);
       if(ssc->ssc_sri)
 	snprintf(sr, sizeof(sr), "%d", sri_to_rate(ssc->ssc_sri));
       else
@@ -1167,11 +1193,14 @@ dvr_thread_rec_start(dvr_entry_t **_de, streaming_start_t *ss,
 
     // Try to restart the recording if the muxer doesn't
     // support reconfiguration of the streams.
+    if (!dvr_thread_global_lock(de, run)) {
+      *dts_offset = PTS_UNSET;
+      *started = 0;
+      return 0;
+    }
     dvr_thread_epilog(de, postproc);
     *dts_offset = PTS_UNSET;
     *started = 0;
-    if (!dvr_thread_global_lock(de, run))
-      return 0;
     if (de->de_config->dvr_clone)
       *_de = dvr_entry_clone(de);
     dvr_thread_global_unlock(de);
@@ -1182,11 +1211,12 @@ dvr_thread_rec_start(dvr_entry_t **_de, streaming_start_t *ss,
     if (!dvr_thread_global_lock(de, run))
       return 0;
     dvr_rec_set_state(de, DVR_RS_WAIT_PROGRAM_START, 0);
-    if(dvr_rec_start(de, ss) == 0) {
+    int code = dvr_rec_start(de, ss);
+    if(code == 0) {
       ret = 1;
       *started = 1;
     } else
-      dvr_stop_recording(de, SM_CODE_INVALID_TARGET, 1, 0);
+      dvr_stop_recording(de, code == SM_CODE_NO_SPACE ? SM_CODE_NO_SPACE : SM_CODE_INVALID_TARGET, 1, 0);
     dvr_thread_global_unlock(de);
   }
   return ret;
@@ -1319,12 +1349,13 @@ dvr_thread(void *aux)
 
       if (epg_pause != (epg_running == 2)) {
         epg_pause = epg_running == 2;
-	muxer_add_marker(prch->prch_muxer);
+	if (muxing) muxer_add_marker(prch->prch_muxer);
       } else if (commercial != pkt->pkt_commercial) {
-        muxer_add_marker(prch->prch_muxer);
+        commercial = pkt->pkt_commercial;
+        if (muxing) muxer_add_marker(prch->prch_muxer);
+      } else if (atomic_exchange(&de->de_running_change, 0)) {
+        if (muxing) muxer_add_marker(prch->prch_muxer);
       }
-
-      commercial = pkt->pkt_commercial;
 
       if (ss == NULL)
         break;
@@ -1389,6 +1420,13 @@ dvr_thread(void *aux)
         break;
       }
 
+      if (epg_pause != (epg_running == 2)) {
+        epg_pause = epg_running == 2;
+	if (muxing) muxer_add_marker(prch->prch_muxer);
+      } else if (atomic_exchange(&de->de_running_change, 0)) {
+        if (muxing) muxer_add_marker(prch->prch_muxer);
+      }
+
       if (muxing == 0 &&
           !dvr_thread_rec_start(&de, ss, &run, &started, &dts_offset, postproc))
         break;
@@ -1439,7 +1477,10 @@ dvr_thread(void *aux)
 
 fin:
         streaming_queue_clear(&backlog);
-	dvr_thread_epilog(de, postproc);
+        if (!dvr_thread_global_lock(de, &run))
+          break;
+        dvr_thread_epilog(de, postproc);
+        dvr_thread_global_unlock(de);
 	start_time = 0;
 	started = 0;
 	muxing = 0;
@@ -1504,14 +1545,10 @@ fin:
 
   streaming_queue_clear(&backlog);
 
-  if (prch->prch_muxer)
-    dvr_thread_epilog(de, postproc);
-
   if (ss)
     streaming_start_unref(ss);
 
-  free(postproc);
-  return NULL;
+  return postproc;
 }
 
 /**
@@ -1568,6 +1605,8 @@ dvr_thread_epilog(dvr_entry_t *de, const char *dvr_postproc)
   profile_chain_t *prch = de->de_chain;
   htsmsg_t *e;
   htsmsg_field_t *f;
+
+  lock_assert(&global_lock);
 
   if (prch == NULL)
     return;

@@ -34,6 +34,11 @@ typedef enum {
   MC_AVMATROSKA  = 7,
   MC_AVWEBM      = 8,
   MC_AVMP4       = 9,
+  MC_MPEG2AUDIO  = 10,
+  MC_AC3         = 11,
+  MC_AAC         = 12,
+  MC_MP4A        = 13,
+  MC_VORBIS      = 14
 } muxer_container_type_t;
 
 typedef enum {
@@ -48,20 +53,34 @@ typedef enum {
 /* Muxer configuration used when creating a muxer. */
 typedef struct muxer_config {
   int                  m_type; /* MC_* */
-
-  int                  m_rewrite_pat;
-  int                  m_rewrite_pmt;
-  int                  m_rewrite_sdt;
-  int                  m_rewrite_eit;
   int                  m_cache;
 
-/* 
- * directory_permissions should really be in dvr.h as it's not really needed for the muxer
- * but it's kept with file_permissions for neatness
- */
-
+  /*
+   * directory_permissions should really be in dvr.h as it's not really
+   * needed for the muxer, but it's kept with file_permissions for neatness
+   */
   int                  m_file_permissions;
   int                  m_directory_permissions; 
+
+  /*
+   * type specific section
+   */
+  union {
+    struct {
+      int              m_rewrite_sid;
+      int              m_rewrite_pat;
+      int              m_rewrite_pmt;
+      int              m_rewrite_sdt;
+      int              m_rewrite_eit;
+    } pass;
+    struct {
+      int              m_dvbsub_reorder;
+    } mkv;
+    struct {
+      int              m_force_type;
+      int              m_index;
+    } audioes;
+  } u;
 } muxer_config_t;
 
 struct muxer;
@@ -122,7 +141,7 @@ static inline int muxer_reconfigure (muxer_t *m, const struct streaming_start *s
   { if(m && ss) return m->m_reconfigure(m, ss); return -1; }
 
 static inline int muxer_add_marker (muxer_t *m)
-  { if (m) return m->m_add_marker(m); return -1; }
+  { if (m && m->m_add_marker) return m->m_add_marker(m); return -1; }
 
 static inline int muxer_close (muxer_t *m)
   { if (m) return m->m_close(m); return -1; }

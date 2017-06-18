@@ -72,11 +72,13 @@
 #include "bouquet.h"
 #include "tvhtime.h"
 #include "packet.h"
+#include "streaming.h"
 #include "memoryinfo.h"
 
 #ifdef PLATFORM_LINUX
 #include <sys/prctl.h>
 #endif
+#include <sys/resource.h>
 #include <openssl/ssl.h>
 #include <openssl/conf.h>
 #include <openssl/err.h>
@@ -143,7 +145,7 @@ const char      *tvheadend_cwd0;
 const char      *tvheadend_cwd;
 const char      *tvheadend_webroot;
 const tvh_caps_t tvheadend_capabilities[] = {
-#if ENABLE_CWC || ENABLE_CAPMT || ENABLE_CONSTCW
+#if ENABLE_CWC || ENABLE_CAPMT || ENABLE_CONSTCW || ENABLE_CCCAM
   { "caclient", NULL },
 #endif
 #if ENABLE_LINUXDVB || ENABLE_SATIP_CLIENT || ENABLE_HDHOMERUN_CLIENT
@@ -369,7 +371,7 @@ tasklet_arm_alloc(tsk_callback_t *callback, void *opaque)
   tasklet_t *tsk = calloc(1, sizeof(*tsk));
   if (tsk) {
     memoryinfo_alloc(&tasklet_memoryinfo, sizeof(*tsk));
-    tsk->tsk_allocated = 1;
+    tsk->tsk_free = free;
     tasklet_arm(tsk, callback, opaque);
   }
   return tsk;
@@ -409,8 +411,7 @@ tasklet_disarm(tasklet_t *tsk)
     TAILQ_REMOVE(&tasklets, tsk, tsk_link);
     tsk->tsk_callback(tsk->tsk_opaque, 1);
     tsk->tsk_callback = NULL;
-    if (tsk->tsk_allocated)
-      free(tsk);
+    if (tsk->tsk_free) tsk->tsk_free(tsk);
   }
 
   pthread_mutex_unlock(&tasklet_lock);
@@ -427,9 +428,9 @@ tasklet_flush()
     TAILQ_REMOVE(&tasklets, tsk, tsk_link);
     tsk->tsk_callback(tsk->tsk_opaque, 1);
     tsk->tsk_callback = NULL;
-    if (tsk->tsk_allocated) {
+    if (tsk->tsk_free) {
       memoryinfo_free(&tasklet_memoryinfo, sizeof(*tsk));
-      free(tsk);
+      tsk->tsk_free(tsk);
     }
   }
 
@@ -446,7 +447,7 @@ tasklet_thread ( void *aux )
   tsk_callback_t *tsk_cb;
   void *opaque;
 
-  tvhtread_renice(20);
+  tvhthread_renice(20);
 
   pthread_mutex_lock(&tasklet_lock);
   while (tvheadend_is_running()) {
@@ -455,14 +456,14 @@ tasklet_thread ( void *aux )
       tvh_cond_wait(&tasklet_cond, &tasklet_lock);
       continue;
     }
-    /* the callback might re-initialize tasklet, save everythin */
+    /* the callback might re-initialize tasklet, save everything */
     TAILQ_REMOVE(&tasklets, tsk, tsk_link);
     tsk_cb = tsk->tsk_callback;
     opaque = tsk->tsk_opaque;
     tsk->tsk_callback = NULL;
-    if (tsk->tsk_allocated) {
+    if (tsk->tsk_free) {
       memoryinfo_free(&tasklet_memoryinfo, sizeof(*tsk));
-      free(tsk);
+      tsk->tsk_free(tsk);
     }
     /* now, the callback can be safely called */
     if (tsk_cb) {
@@ -740,6 +741,7 @@ main(int argc, char **argv)
     struct timeval tv;
     uint8_t ru[32];
   } randseed;
+  struct rlimit rl;
   extern int dvb_bouquets_parse;
 
   main_tid = pthread_self();
@@ -1122,6 +1124,16 @@ main(int argc, char **argv)
     umask(0);
   }
 
+  memset(&rl, 0, sizeof(rl));
+  if (getrlimit(RLIMIT_STACK, &rl) || rl.rlim_cur < 2*1024*1024) {
+    rlim_t rl2 = rl.rlim_cur;
+    rl.rlim_cur = 2*1024*1024;
+    if (setrlimit(RLIMIT_STACK, &rl)) {
+      tvhlog(LOG_ALERT, LS_START, "too small stack size - %ld", (long)rl2);
+      return 1;
+    }
+  }
+
   atomic_set(&tvheadend_running, 1);
 
   /* Start log thread (must be done post fork) */
@@ -1154,10 +1166,10 @@ main(int argc, char **argv)
   RAND_seed(&randseed, sizeof(randseed));
 
   /* Initialise configuration */
-  notify_init();
-  spawn_init();
-  idnode_init();
-  config_init(opt_nobackup == 0);
+  tvhftrace(LS_MAIN, notify_init);
+  tvhftrace(LS_MAIN, spawn_init);
+  tvhftrace(LS_MAIN, idnode_init);
+  tvhftrace(LS_MAIN, config_init, opt_nobackup == 0);
 
   /* Memoryinfo */
   idclass_register(&memoryinfo_class);
@@ -1179,80 +1191,55 @@ main(int argc, char **argv)
   tvhthread_create(&mtimer_tick_tid, NULL, mtimer_tick_thread, NULL, "mtick");
   tvhthread_create(&tasklet_tid, NULL, tasklet_thread, NULL, "tasklet");
 
-  tvh_hardware_init();
-
-  dbus_server_init(opt_dbus, opt_dbus_session);
-
-  intlconv_init();
-  
-  api_init();
-
-  fsmonitor_init();
-
-  libav_init();
-
-  tvhtime_init();
-
-  profile_init();
-
-  imagecache_init();
-
-  http_client_init(opt_user_agent);
-  esfilter_init();
-
-  bouquet_init();
-
-  service_init();
-
-  dvb_init();
-
+  tvhftrace(LS_MAIN, streaming_init);
+  tvhftrace(LS_MAIN, tvh_hardware_init);
+  tvhftrace(LS_MAIN, dbus_server_init, opt_dbus, opt_dbus_session);
+  tvhftrace(LS_MAIN, intlconv_init);
+  tvhftrace(LS_MAIN, api_init);
+  tvhftrace(LS_MAIN, fsmonitor_init);
+  tvhftrace(LS_MAIN, libav_init);
+  tvhftrace(LS_MAIN, tvhtime_init);
+  tvhftrace(LS_MAIN, profile_init);
+  tvhftrace(LS_MAIN, imagecache_init);
+  tvhftrace(LS_MAIN, http_client_init, opt_user_agent);
+  tvhftrace(LS_MAIN, esfilter_init);
+  tvhftrace(LS_MAIN, bouquet_init);
+  tvhftrace(LS_MAIN, service_init);
+  tvhftrace(LS_MAIN, dvb_init);
 #if ENABLE_MPEGTS
-  mpegts_init(adapter_mask, opt_nosatip, &opt_satip_xml,
-              &opt_tsfile, opt_tsfile_tuner);
+  tvhftrace(LS_MAIN, mpegts_init, adapter_mask, opt_nosatip, &opt_satip_xml,
+            &opt_tsfile, opt_tsfile_tuner);
 #endif
-
-  channel_init();
-
-  bouquet_service_resolve();
-
-  subscription_init();
-
-  dvr_config_init();
-
-  access_init(opt_firstrun, opt_noacl);
-
+  tvhftrace(LS_MAIN, channel_init);
+  tvhftrace(LS_MAIN, bouquet_service_resolve);
+  tvhftrace(LS_MAIN, subscription_init);
+  tvhftrace(LS_MAIN, dvr_config_init);
+  tvhftrace(LS_MAIN, access_init, opt_firstrun, opt_noacl);
 #if ENABLE_TIMESHIFT
-  timeshift_init();
+  tvhftrace(LS_MAIN, timeshift_init);
 #endif
-
-  tcp_server_init();
-  webui_init(opt_xspf);
+  tvhftrace(LS_MAIN, tcp_server_init);
+  tvhftrace(LS_MAIN, webui_init, opt_xspf);
 #if ENABLE_UPNP
-  upnp_server_init(opt_bindaddr);
+  tvhftrace(LS_MAIN, upnp_server_init, opt_bindaddr);
 #endif
-
-  service_mapper_init();
-
-  descrambler_init();
-
-  epggrab_init();
-  epg_init();
-
-  dvr_init();
-
-  dbus_server_start();
-
-  http_server_register();
-  satip_server_register();
-  htsp_register();
+  tvhftrace(LS_MAIN, service_mapper_init);
+  tvhftrace(LS_MAIN, descrambler_init);
+  tvhftrace(LS_MAIN, epggrab_init);
+  tvhftrace(LS_MAIN, epg_init);
+  tvhftrace(LS_MAIN, dvr_init);
+  tvhftrace(LS_MAIN, dbus_server_start);
+  tvhftrace(LS_MAIN, http_server_register);
+  tvhftrace(LS_MAIN, satip_server_register);
+  tvhftrace(LS_MAIN, htsp_register);
 
   if(opt_subscribe != NULL)
     subscription_dummy_join(opt_subscribe, 1);
 
-  avahi_init();
-  bonjour_init();
+  tvhftrace(LS_MAIN, avahi_init);
+  tvhftrace(LS_MAIN, bonjour_init);
 
-  epg_updated(); // cleanup now all prev ref's should have been created
+  tvhftrace(LS_MAIN, epg_updated); // cleanup now all prev ref's should have been created
   epg_in_load = 0;
 
   pthread_mutex_unlock(&global_lock);
@@ -1314,12 +1301,12 @@ main(int argc, char **argv)
 #if ENABLE_MPEGTS
   tvhftrace(LS_MAIN, mpegts_done);
 #endif
+  tvhftrace(LS_MAIN, dvr_done);
   tvhftrace(LS_MAIN, descrambler_done);
   tvhftrace(LS_MAIN, service_mapper_done);
   tvhftrace(LS_MAIN, service_done);
   tvhftrace(LS_MAIN, channel_done);
   tvhftrace(LS_MAIN, bouquet_done);
-  tvhftrace(LS_MAIN, dvr_done);
   tvhftrace(LS_MAIN, subscription_done);
   tvhftrace(LS_MAIN, access_done);
   tvhftrace(LS_MAIN, epg_done);
@@ -1345,6 +1332,7 @@ main(int argc, char **argv)
   tvhftrace(LS_MAIN, profile_done);
   tvhftrace(LS_MAIN, intlconv_done);
   tvhftrace(LS_MAIN, urlparse_done);
+  tvhftrace(LS_MAIN, streaming_done);
   tvhftrace(LS_MAIN, idnode_done);
   tvhftrace(LS_MAIN, notify_done);
   tvhftrace(LS_MAIN, spawn_done);

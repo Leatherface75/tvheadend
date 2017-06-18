@@ -622,6 +622,59 @@ char *url_encode(const char *str)
   return buf;
 }
 
+/**
+ * De-escape HTTP URL
+ */
+void
+http_deescape(char *s)
+{
+  char v, *d = s;
+
+  while(*s) {
+    if(*s == '+') {
+      *d++ = ' ';
+      s++;
+    } else if(*s == '%') {
+      s++;
+      switch(*s) {
+      case '0' ... '9':
+	v = (*s - '0') << 4;
+	break;
+      case 'a' ... 'f':
+	v = (*s - 'a' + 10) << 4;
+	break;
+      case 'A' ... 'F':
+	v = (*s - 'A' + 10) << 4;
+	break;
+      default:
+	*d = 0;
+	return;
+      }
+      s++;
+      switch(*s) {
+      case '0' ... '9':
+	v |= (*s - '0');
+	break;
+      case 'a' ... 'f':
+	v |= (*s - 'a' + 10);
+	break;
+      case 'A' ... 'F':
+	v |= (*s - 'A' + 10);
+	break;
+      default:
+	*d = 0;
+	return;
+      }
+      s++;
+
+      *d++ = v;
+    } else {
+      *d++ = *s++;
+    }
+  }
+  *d = 0;
+}
+
 /*
  *
  */
@@ -796,12 +849,8 @@ htsmsg_t *network_interfaces_enum(void *obj, const char *lang)
 
   if (ifnames) {
     struct if_nameindex *ifname;
-    for (ifname = ifnames; ifname->if_name; ifname++) {
-      htsmsg_t *entry = htsmsg_create_map();
-      htsmsg_add_str(entry, "key", ifname->if_name);
-      htsmsg_add_str(entry, "val", ifname->if_name);
-      htsmsg_add_msg(list, NULL, entry);
-    }
+    for (ifname = ifnames; ifname->if_name; ifname++)
+      htsmsg_add_msg(list, NULL, htsmsg_create_key_val(ifname->if_name, ifname->if_name));
     if_freenameindex(ifnames);
   }
 

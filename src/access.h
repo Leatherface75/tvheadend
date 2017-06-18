@@ -23,6 +23,7 @@
 #include "htsmsg.h"
 
 #define ACCESS_DEFAULT_COMMENT "Default access entry"
+#define ACCESS_WIZARD_COMMENT "Wizard access entry"
 
 struct profile;
 struct dvr_config;
@@ -97,13 +98,17 @@ typedef struct access_entry {
   char *ae_username;
   char *ae_comment;
   char *ae_lang;
+  int ae_change_lang;
   char *ae_lang_ui;
+  int ae_change_lang_ui;
   char *ae_theme;
+  int ae_change_theme;
 
   int ae_index;
   int ae_wizard;
   int ae_enabled;
   int ae_uilevel;
+  int ae_change_uilevel;
   int ae_uilevel_nochange;
 
   int ae_streaming;
@@ -111,9 +116,11 @@ typedef struct access_entry {
   int ae_htsp_streaming;
 
   idnode_list_head_t ae_profiles;
+  int ae_change_profiles;
 
   int ae_conn_limit_type;
   uint32_t ae_conn_limit;
+  int ae_change_conn_limit;
 
   int ae_dvr;
   int ae_htsp_dvr;
@@ -124,16 +131,20 @@ typedef struct access_entry {
   int ae_htsp_anonymize;
 
   idnode_list_head_t ae_dvr_configs;
+  int ae_change_dvr_configs;
 
   int ae_webui;
   int ae_admin;
 
   uint64_t ae_chmin;
   uint64_t ae_chmax;
+  int ae_change_chrange;
 
   int ae_chtags_exclude;
   idnode_list_head_t ae_chtags;
+  int ae_change_chtags;
 
+  int ae_change_rights;
   uint32_t ae_rights;
 
   struct access_ipmask_queue ae_ipmasks;
@@ -256,7 +267,7 @@ int access_verify_list(htsmsg_t *list, const char *item);
  */
 typedef int (*verify_callback_t)(void *aux, const char *passwd);
 
-access_t *access_get(struct sockaddr *src, const char *username,
+access_t *access_get(struct sockaddr_storage *src, const char *username,
                      verify_callback_t verify, void *aux);
 
 /**
@@ -269,7 +280,7 @@ access_get_by_username(const char *username);
  *
  */
 access_t *
-access_get_by_addr(struct sockaddr *src);
+access_get_by_addr(struct sockaddr_storage *src);
 
 /**
  *

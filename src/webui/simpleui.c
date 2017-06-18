@@ -337,8 +337,8 @@ page_einfo(http_connection_t *hc, const char *remain, void *opaque)
   if((http_arg_get(&hc->hc_req_args, "rec")) != NULL) {
     de = dvr_entry_create_by_event(1, NULL, e, 0, 0, hc->hc_username ?: NULL,
                                    hc->hc_representative ?: NULL, NULL,
-                                   DVR_PRIO_NORMAL, DVR_RET_DVRCONFIG,
-				   DVR_RET_DVRCONFIG, "simpleui");
+                                   DVR_PRIO_NORMAL, DVR_RET_REM_DVRCONFIG,
+                                   DVR_RET_REM_DVRCONFIG, "simpleui");
   } else if(de != NULL && (http_arg_get(&hc->hc_req_args, "cancel")) != NULL) {
     de = dvr_entry_cancel(de, 0);
   }
@@ -356,7 +356,7 @@ page_einfo(http_connection_t *hc, const char *remain, void *opaque)
 
   s = epg_episode_get_title(e->episode, lang);
   htsbuf_qprintf(hq, "<hr><b>\"%s\": \"%s\"</b><br><br>",
-	      channel_get_name(e->channel), s ?: "");
+	      channel_get_name(e->channel, lang), s ?: "");
   
   dvr_status = de != NULL ? de->de_sched_state : DVR_NOSTATE;
 

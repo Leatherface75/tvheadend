@@ -21,6 +21,9 @@
 
 int ts_resync ( const uint8_t *tsb, int *len, int *idx );
 
+void ts_recv_packet0
+  (struct mpegts_service *t, elementary_stream_t *st, const uint8_t *tsb, int len);
+
 int ts_recv_packet1
   (struct mpegts_service *t, const uint8_t *tsb, int len, int table);
 
@@ -29,5 +32,7 @@ void ts_recv_packet2(struct mpegts_service *t, const uint8_t *tsb, int len);
 void ts_skip_packet2(struct mpegts_service *t, const uint8_t *tsb, int len);
 
 void ts_recv_raw(struct mpegts_service *t, const uint8_t *tsb, int len);
+
+void ts_recv_hbbtv_cb(mpegts_psi_table_t *mt, const uint8_t *buf, int len);
 
 #endif /* TSDEMUX_H */

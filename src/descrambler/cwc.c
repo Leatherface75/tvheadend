@@ -50,7 +50,7 @@
 #define CWC_ES_PIDS           8
 #define CWC_MAX_NOKS          3
 
-#define CWS_NETMSGSIZE 362
+#define CWS_NETMSGSIZE 500
 #define CWS_FIRSTCMDNO 0xe0
 
 typedef enum {
@@ -194,6 +194,7 @@ typedef struct cwc {
 
   int cwc_fd;
 
+  int cwc_keepalive_interval;
   int cwc_retry_delay;
 
   pthread_t cwc_tid;
@@ -675,7 +676,7 @@ cwc_ecm_reset(th_descrambler_t *th)
   ecm_section_t *es;
 
   pthread_mutex_lock(&cwc->cwc_mutex);
-  ct->td_keystate = DS_UNKNOWN;
+  descrambler_change_keystate(th, DS_READY, 1);
   LIST_FOREACH(ep, &ct->cs_pids, ep_link)
     LIST_FOREACH(es, &ep->ep_sections, es_link)
       es->es_keystate = ES_UNKNOWN;
@@ -741,8 +742,8 @@ handle_ecm_reply(cwc_service_t *ct, ecm_section_t *es, uint8_t *msg,
                es->es_section, ct->td_nicename, t->s_dvb_svcname);
       es->es_nok = CWC_MAX_NOKS; /* do not send more ECM requests */
       es->es_keystate = ES_IDLE;
-      if (ct->td_keystate == DS_UNKNOWN)
-        ct->td_keystate = DS_IDLE;
+      if (ct->td_keystate == DS_READY)
+        descrambler_change_keystate((th_descrambler_t *)ct, DS_IDLE, 1);
     }
 
     tvhdebug(LS_CWC,
@@ -777,7 +778,7 @@ forbid:
                "Can not descramble service \"%s\", access denied (seqno: %d "
                "Req delay: %"PRId64" ms) from %s",
                t->s_dvb_svcname, seq, delay, ct->td_nicename);
-      ct->td_keystate = DS_FORBIDDEN;
+      descrambler_change_keystate((th_descrambler_t *)ct, DS_FORBIDDEN, 1);
       ct->ecm_state = ECM_RESET;
       /* this pid is not valid, force full scan */
       if (t->s_dvb_prefcapid == ct->cs_channel && t->s_dvb_prefcapid_lock == PREFCAPID_OFF)
@@ -848,8 +849,8 @@ forbid:
     es3 = *es;
     pthread_mutex_unlock(&cwc->cwc_mutex);
     descrambler_keys((th_descrambler_t *)ct,
-                     off == 16 ? DESCRAMBLER_AES : DESCRAMBLER_DES,
-                     msg + 3, msg + 3 + off);
+                     off == 16 ? DESCRAMBLER_AES128_ECB : DESCRAMBLER_CSA_CBC,
+                     0, msg + 3, msg + 3 + off);
     snprintf(chaninfo, sizeof(chaninfo), "%s:%i", cwc->cwc_hostname, cwc->cwc_port);
     descrambler_notify((th_descrambler_t *)ct,
                        es3.es_caid, es3.es_provid,
@@ -1067,9 +1068,9 @@ cwc_writer_thread(void *aux)
     }
 
 
-    /* If nothing is to be sent in CWC_KEEPALIVE_INTERVAL seconds we
+    /* If nothing is to be sent in keepalive interval seconds we
        need to send a keepalive */
-    mono = mclk() + sec2mono(CWC_KEEPALIVE_INTERVAL);
+    mono = mclk() + sec2mono(cwc->cwc_keepalive_interval);
     do {
       r = tvh_cond_timedwait(&cwc->cwc_writer_cond, &cwc->cwc_writer_mutex, mono);
       if(r == ETIMEDOUT) {
@@ -1160,7 +1161,7 @@ cwc_session(cwc_t *cwc)
   while(!cwc_must_break(cwc)) {
 
     if((r = cwc_read_message(cwc, "Decoderloop", 
-                             CWC_KEEPALIVE_INTERVAL * 2 * 1000)) < 0)
+                             cwc->cwc_keepalive_interval * 2 * 1000)) < 0)
       break;
     cwc_running_reply(cwc, cwc->cwc_buf[12], cwc->cwc_buf, r);
   }
@@ -1454,7 +1455,7 @@ found:
 
       if(cwc->cwc_fd == -1) {
         // New key, but we are not connected (anymore), can not descramble
-        ct->td_keystate = DS_UNKNOWN;
+        descrambler_change_keystate((th_descrambler_t *)ct, DS_READY, 0);
         break;
       }
 
@@ -1624,6 +1625,8 @@ cwc_service_start(caclient_t *cac, service_t *t)
   LIST_INSERT_HEAD(&t->s_descramblers, td, td_service_link);
 
   LIST_INSERT_HEAD(&cwc->cwc_services, ct, cs_link);
+
+  descrambler_change_keystate((th_descrambler_t *)td, DS_READY, 0);
 
 add:
   i = 0;
@@ -1832,6 +1835,7 @@ const idclass_t caclient_cwc_class =
       .name     = N_("Username"),
       .desc     = N_("Login username."),
       .off      = offsetof(cwc_t, cwc_username),
+      .opts     = PO_TRIM,
     },
     {
       .type     = PT_STR,
@@ -1848,6 +1852,7 @@ const idclass_t caclient_cwc_class =
       .desc     = N_("Hostname (or IP) of the server."),
       .off      = offsetof(cwc_t, cwc_hostname),
       .def.s    = "localhost",
+      .opts     = PO_TRIM,
     },
     {
       .type     = PT_INT,
@@ -1882,6 +1887,14 @@ const idclass_t caclient_cwc_class =
       .off      = offsetof(cwc_t, cwc_emmex),
       .def.i    = 1
     },
+    {
+      .type     = PT_INT,
+      .id       = "keepalive_interval",
+      .name     = N_("Keepalive interval"),
+      .desc     = N_("Keepalive interval in seconds"),
+      .off      = offsetof(cwc_t, cwc_keepalive_interval),
+      .def.i    = CWC_KEEPALIVE_INTERVAL,
+    },
     { }
   }
 };
@@ -1899,6 +1912,7 @@ caclient_t *cwc_create(void)
   cwc->cac_start        = cwc_service_start;
   cwc->cac_conf_changed = cwc_conf_changed;
   cwc->cac_caid_update  = cwc_caid_update;
+  cwc->cwc_keepalive_interval = CWC_KEEPALIVE_INTERVAL;
   return (caclient_t *)cwc;
 }
 

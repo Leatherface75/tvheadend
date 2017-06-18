@@ -1,6 +1,6 @@
 {
+  "concurrent": false,
   "targets": {
-
     "precise-amd64": {
       "buildenv": "precise-amd64",
       "builddeps": [
@@ -16,16 +16,17 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre3-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --disable-libx265_static --disable-libx265 --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --disable-libx265_static\\ --disable-libx265\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
       ]
     },
-
     "precise-i386": {
       "buildenv": "precise-i386",
       "builddeps": [
@@ -41,16 +42,17 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre3-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --disable-libx265_static --disable-libx265 --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --disable-libx265_static\\ --disable-libx265\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
       ]
     },
-
     "trusty-amd64": {
       "buildenv": "trusty-amd64",
       "builddeps": [
@@ -66,16 +68,17 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre3-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
       ]
     },
-
     "trusty-i386": {
       "buildenv": "trusty-i386",
       "builddeps": [
@@ -91,18 +94,19 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre3-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
       ]
     },
-
-    "vivid-amd64": {
-      "buildenv": "vivid-amd64",
+    "xenial-amd64": {
+      "buildenv": "xenial-amd64",
       "builddeps": [
         "cmake",
         "git",
@@ -116,18 +120,98 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre2-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
       ]
     },
-
-    "vivid-i386": {
-      "buildenv": "vivid-i386",
+    "xenial-i386": {
+      "buildenv": "xenial-i386",
+      "builddeps": [
+        "cmake",
+        "git",
+        "build-essential",
+        "pkg-config",
+        "libavahi-client-dev",
+        "libssl-dev",
+        "zlib1g-dev",
+        "wget",
+        "bzip2",
+        "git-core",
+        "liburiparser-dev",
+        "libpcre2-dev",
+        "python",
+        "dvb-apps",
+        "debhelper",
+        "ccache"
+      ],
+      "buildcmd": [
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "jessie-i386": {
+      "buildenv": "jessie-i386",
+      "builddeps": [
+        "lsb-release",
+        "cmake",
+        "git",
+        "build-essential",
+        "pkg-config",
+        "gettext",
+        "libavahi-client-dev",
+        "libssl-dev",
+        "zlib1g-dev",
+        "wget",
+        "bzip2",
+        "git-core",
+        "liburiparser-dev",
+        "libpcre3-dev",
+        "python",
+        "dvb-apps",
+        "debhelper",
+        "ccache"
+      ],
+      "buildcmd": [
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "jessie-amd64": {
+      "buildenv": "jessie-amd64",
+      "builddeps": [
+        "lsb-release",
+        "cmake",
+        "git",
+        "build-essential",
+        "pkg-config",
+        "gettext",
+        "libavahi-client-dev",
+        "libssl-dev",
+        "zlib1g-dev",
+        "wget",
+        "bzip2",
+        "git-core",
+        "liburiparser-dev",
+        "libpcre3-dev",
+        "python",
+        "dvb-apps",
+        "debhelper",
+        "ccache"
+      ],
+      "buildcmd": [
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-ffmpeg_static\\ --enable-hdhomerun_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "xenial-armhf": {
+      "buildenv": "xenial-armhf",
       "builddeps": [
         "cmake",
         "git",
@@ -141,13 +225,95 @@
         "bzip2",
         "git-core",
         "liburiparser-dev",
+        "libpcre2-dev",
         "python",
-        "dvb-apps"
+        "dvb-apps",
+        "debhelper",
+        "ccache"
       ],
-
       "buildcmd": [
-        "./configure --disable-dvbscan --enable-ffmpeg_static --enable-hdhomerun_static",
-        "make -j ${PARALLEL}"
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-hdhomerun_static\\ --disable-ffmpeg_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "xenial-arm64": {
+      "buildenv": "xenial-arm64",
+      "builddeps": [
+        "cmake",
+        "git",
+        "build-essential",
+        "pkg-config",
+        "gettext",
+        "libavahi-client-dev",
+        "libssl-dev",
+        "zlib1g-dev",
+        "wget",
+        "bzip2",
+        "git-core",
+        "liburiparser-dev",
+        "libpcre2-dev",
+        "python",
+        "dvb-apps",
+        "debhelper",
+        "ccache"
+      ],
+      "buildcmd": [
+        "AUTOBUILD_CONFIGURE_EXTRA=--enable-ccache\\ --enable-hdhomerun_static\\ --disable-ffmpeg_static ./Autobuild.sh -t ${TARGET} -j ${PARALLEL} -w ${WORKDIR}",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "fedora24-x86_64": {
+      "buildenv": "fedora24-x86_64",
+      "builddeps": [
+        "gcc-c++",
+        "which",
+        "rpm-build",
+        "rpmdevtools",
+        "git",
+        "make",
+        "cmake",
+        "gettext-devel",
+        "dbus-devel",
+        "avahi-devel",
+        "openssl-devel",
+        "zlib-devel",
+        "wget",
+        "bzip2",
+        "uriparser-devel",
+        "pcre2-devel",
+        "python",
+        "ccache"
+      ],
+      "buildcmd": [
+        "./configure --disable-dvbscan && make -C rpm build-doozer",
+        "support/bintray.py publish filelist.txt"
+      ]
+    },
+    "centos7-x86_64": {
+      "buildenv": "centos7-x86_64",
+      "builddeps": [
+        "gcc-c++",
+        "which",
+        "rpm-build",
+        "rpmdevtools",
+        "git",
+        "make",
+        "cmake",
+        "gettext-devel",
+        "dbus-devel",
+        "avahi-devel",
+        "openssl-devel",
+        "zlib-devel",
+        "wget",
+        "bzip2",
+        "uriparser-devel",
+        "pcre2-devel",
+        "python",
+        "ccache"
+      ],
+      "buildcmd": [
+        "./configure --disable-dvbscan && make -C rpm build-doozer",
+        "support/bintray.py publish filelist.txt"
       ]
     }
   }

@@ -313,6 +313,18 @@ htsmsg_add_bool(htsmsg_t *msg, const char *name, int b)
  *
  */
 void
+htsmsg_set_bool(htsmsg_t *msg, const char *name, int b)
+{
+  htsmsg_field_t *f = htsmsg_field_find(msg, name);
+  if (!f)
+    f = htsmsg_field_add(msg, name, HMF_BOOL, HMF_NAME_INALLOCED, 0);
+  f->hmf_bool = !!b;
+}
+
+/*
+ *
+ */
+void
 htsmsg_add_s64(htsmsg_t *msg, const char *name, int64_t s64)
 {
   htsmsg_field_t *f = htsmsg_field_add(msg, name, HMF_S64, HMF_NAME_INALLOCED, 0);
@@ -1273,4 +1285,18 @@ htsmsg_csv_2_list(const char *str, char delim)
     free(tokbuf);
   }
   return m;
+}
+
+/*
+ *
+ */
+htsmsg_t *
+htsmsg_create_key_val(const char *key, const char *val)
+{
+  htsmsg_t *r = htsmsg_create_map();
+  if (r) {
+    htsmsg_add_str(r, "key", key);
+    htsmsg_add_str(r, "val", val);
+  }
+  return r;
 }

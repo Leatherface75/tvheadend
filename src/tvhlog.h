@@ -45,8 +45,6 @@ typedef struct {
 
 /* Config */
 extern int              tvhlog_level;
-extern htsmsg_t        *tvhlog_debug;
-extern htsmsg_t        *tvhlog_trace;
 extern char            *tvhlog_path;
 extern int              tvhlog_options;
 extern pthread_mutex_t  tvhlog_mutex;
@@ -141,6 +139,7 @@ enum {
   LS_TBL_PASS,
   LS_TBL_SATIP,
   LS_FASTSCAN,
+  LS_PCR,
   LS_PARSER,
   LS_TS,
   LS_GLOBALHEADERS,
@@ -148,6 +147,7 @@ enum {
   LS_HEVC,
   LS_MUXER,
   LS_PASS,
+  LS_AUDIOES,
   LS_MKV,
   LS_SERVICE,
   LS_CHANNEL,
@@ -157,10 +157,12 @@ enum {
   LS_ESFILTER,
   LS_PROFILE,
   LS_DESCRAMBLER,
+  LS_DESCRAMBLER_EMM,
   LS_CACLIENT,
   LS_CSA,
   LS_CAPMT,
   LS_CWC,
+  LS_CCCAM,
   LS_DVBCAM,
   LS_DVR,
   LS_EPG,
@@ -174,6 +176,7 @@ enum {
   LS_TRANSCODE,
   LS_IPTV,
   LS_IPTV_PCR,
+  LS_IPTV_SUB,
   LS_LINUXDVB,
   LS_DISEQC,
   LS_EN50221,
@@ -189,6 +192,7 @@ enum {
   LS_TIMESHIFT,
   LS_SCANFILE,
   LS_TSFILE,
+  LS_TSDEBUG,
   LS_LAST     /* keep this last */
 };
 
@@ -216,9 +220,9 @@ static inline void tvhtrace_no_warnings(const char *fmt, ...) { (void)fmt; }
 #define tvhlog_hexdump(subsys, data, len) do { tvhtrace_no_warnings(NULL, subsys, data, len); } while (0)
 #endif
 
-#define tvhftrace(subsys, fcn) do { \
+#define tvhftrace(subsys, fcn, ...) do { \
   tvhtrace(subsys, "%s() enter", #fcn); \
-  fcn(); \
+  fcn(__VA_ARGS__); \
   tvhtrace(subsys, "%s() leave", #fcn); \
 } while (0)
 

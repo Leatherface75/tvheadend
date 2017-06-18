@@ -57,6 +57,7 @@ int comet_running;
 typedef struct comet_mailbox {
   char *cmb_boxid; /* SHA-1 hash */
   char *cmb_lang;  /* UI language */
+  int cmb_restricted; /* !admin */
   htsmsg_t *cmb_messages; /* A vector */
   int64_t cmb_last_used;
   LIST_ENTRY(comet_mailbox) cmb_link;
@@ -148,26 +149,28 @@ comet_access_update(http_connection_t *hc, comet_mailbox_t *cmb)
   extern int access_noacl;
 
   htsmsg_t *m = htsmsg_create_map();
-  const char *username;
+  const char *username = "";
   int64_t bfree, bused, btotal;
   int dvr = !http_access_verify(hc, ACCESS_RECORDER);
   int admin = !http_access_verify(hc, ACCESS_ADMIN);
   const char *s;
 
-  username = hc->hc_access ? (hc->hc_access->aa_username ?: "") : "";
-
   htsmsg_add_str(m, "notificationClass", "accessUpdate");
 
-  switch (hc->hc_access->aa_uilevel) {
-  case UILEVEL_BASIC:    s = "basic";    break;
-  case UILEVEL_ADVANCED: s = "advanced"; break;
-  case UILEVEL_EXPERT:   s = "expert";   break;
-  default:               s = NULL;       break;
-  }
-  if (s) {
-    htsmsg_add_str(m, "uilevel", s);
-    if (config.uilevel_nochange)
-      htsmsg_add_u32(m, "uilevel_nochange", config.uilevel_nochange);
+  if (hc->hc_access) {
+    username = hc->hc_access->aa_username ?: "";
+
+    switch (hc->hc_access->aa_uilevel) {
+    case UILEVEL_BASIC:    s = "basic";    break;
+    case UILEVEL_ADVANCED: s = "advanced"; break;
+    case UILEVEL_EXPERT:   s = "expert";   break;
+    default:               s = NULL;       break;
+    }
+    if (s) {
+      htsmsg_add_str(m, "uilevel", s);
+      if (config.uilevel_nochange)
+        htsmsg_add_u32(m, "uilevel_nochange", config.uilevel_nochange);
+    }
   }
   htsmsg_add_str(m, "theme", access_get_theme(hc->hc_access));
   htsmsg_add_u32(m, "quicktips", config.ui_quicktips);
@@ -209,7 +212,7 @@ comet_serverIpPort(http_connection_t *hc, comet_mailbox_t *cmb)
   char buf[50];
   uint32_t port;
 
-  tcp_get_str_from_ip((struct sockaddr*)hc->hc_self, buf, 50);
+  tcp_get_str_from_ip(hc->hc_self, buf, 50);
 
   if(hc->hc_self->ss_family == AF_INET)
     port = ((struct sockaddr_in*)hc->hc_self)->sin_port;
@@ -240,6 +243,7 @@ comet_mailbox_poll(http_connection_t *hc, const char *remain, void *opaque)
   comet_mailbox_t *cmb = NULL; 
   const char *cometid = http_arg_get(&hc->hc_req_args, "boxid");
   const char *immediate = http_arg_get(&hc->hc_req_args, "immediate");
+  const char *lang = hc->hc_access->aa_lang_ui;
   int im = immediate ? atoi(immediate) : 0, e;
   int64_t mono;
   htsmsg_t *m;
@@ -259,11 +263,19 @@ comet_mailbox_poll(http_connection_t *hc, const char *remain, void *opaque)
 	break;
     
   if(cmb == NULL) {
-    cmb = comet_mailbox_create(hc->hc_access->aa_lang_ui);
+    cmb = comet_mailbox_create(lang);
     comet_access_update(hc, cmb);
     comet_serverIpPort(hc, cmb);
   }
   cmb->cmb_last_used = 0; /* Make sure we're not flushed out */
+  if (http_access_verify(hc, ACCESS_ADMIN)) {
+    if (!cmb->cmb_restricted) {
+      cmb->cmb_restricted = 1;
+      pthread_mutex_unlock(&comet_mutex);
+      comet_mailbox_add_logmsg(tvh_gettext_lang(lang, N_("Restricted log mode (no administrator)")), 0, 0);
+      pthread_mutex_lock(&comet_mutex);
+    }
+  }
 
   if(!im && cmb->cmb_messages == NULL) {
     mono = mclk() + sec2mono(10);
@@ -304,6 +316,8 @@ comet_mailbox_dbg(http_connection_t *hc, const char *remain, void *opaque)
 {
   comet_mailbox_t *cmb = NULL; 
   const char *cometid = http_arg_get(&hc->hc_req_args, "boxid");
+  const char *lang = hc->hc_access->aa_lang_ui;
+  const char *s;
 
   if(cometid == NULL)
     return 400;
@@ -317,15 +331,22 @@ comet_mailbox_dbg(http_connection_t *hc, const char *remain, void *opaque)
  
       if(cmb->cmb_messages == NULL)
 	cmb->cmb_messages = htsmsg_create_list();
- 
+
+      if(cmb->cmb_restricted || http_access_verify(hc, ACCESS_ADMIN))
+        s = N_("Only admin can watch the realtime log.");
+      else if(cmb->cmb_debug)
+        s = N_("Loglevel debug: enabled");
+      else
+        s = N_("Loglevel debug: disabled");
+      snprintf(buf, sizeof(buf), "%s", tvh_gettext_lang(lang, s));
+
       htsmsg_t *m = htsmsg_create_map();
       htsmsg_add_str(m, "notificationClass", "logmessage");
-      snprintf(buf, sizeof(buf), "Loglevel debug: %sabled", 
-	       cmb->cmb_debug ? "en" : "dis");
       htsmsg_add_str(m, "logtxt", buf);
       htsmsg_add_msg(cmb->cmb_messages, NULL, m);
-
+      
       tvh_cond_signal(&comet_cond, 1);
+      break;
     }
   }
   pthread_mutex_unlock(&comet_mutex);
@@ -414,9 +435,12 @@ comet_mailbox_add_message(htsmsg_t *m, int isdebug, int rewrite)
   if (atomic_get(&comet_running)) {
     LIST_FOREACH(cmb, &mailboxes, cmb_link) {
 
-      if(isdebug && !cmb->cmb_debug)
+      if(cmb->cmb_restricted)
         continue;
 
+      if(isdebug && !cmb->cmb_debug)
+        continue;
+        
       if(cmb->cmb_messages == NULL)
         cmb->cmb_messages = htsmsg_create_list();
       e = htsmsg_copy(m);
@@ -428,4 +452,17 @@ comet_mailbox_add_message(htsmsg_t *m, int isdebug, int rewrite)
   }
 
   pthread_mutex_unlock(&comet_mutex);
+}
+
+/**
+ *
+ */
+void
+comet_mailbox_add_logmsg(const char *txt, int isdebug, int rewrite)
+{
+  htsmsg_t *m = htsmsg_create_map();
+  htsmsg_add_str(m, "notificationClass", "logmessage");
+  htsmsg_add_str(m, "logtxt", txt);
+  comet_mailbox_add_message(m, isdebug, 0);
+  htsmsg_destroy(m);
 }

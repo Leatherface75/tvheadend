@@ -30,14 +30,17 @@
 typedef struct config {
   idnode_t idnode;
   uint32_t version;
+  int hbbtv;
   int uilevel;
   int uilevel_nochange;
   int ui_quicktips;
   int digest;
+  int proxy;
   char *realm;
   char *wizard;
   char *full_version;
   char *server_name;
+  char *http_server_name;
   char *language;
   char *info_area;
   char *language_ui;
@@ -58,6 +61,8 @@ typedef struct config {
   int caclient_ui;
   int parser_backlog;
   int epg_compress;
+  uint32_t epg_cut_window;
+  uint32_t epg_update_window;
 } config_t;
 
 extern const idclass_t config_class;

@@ -36,8 +36,6 @@
 #define IPTV_KILL_USR1   4
 #define IPTV_KILL_USR2   5
 
-struct bouquet;
-
 extern pthread_mutex_t iptv_lock;
 
 typedef struct iptv_input   iptv_input_t;
@@ -83,6 +81,7 @@ struct iptv_network
   int in_scan_create;
   int in_priority;
   int in_streaming_priority;
+  int in_remove_scrambled_bits;
 
   uint16_t in_service_id;
 
@@ -92,8 +91,6 @@ struct iptv_network
 
   char    *in_url;
   char    *in_url_sane;
-  int      in_bouquet;
-  mtimer_t in_bouquet_timer;
   char    *in_ctx_charset;
   int64_t  in_channel_number;
   uint32_t in_refetch_period;
@@ -181,7 +178,6 @@ extern iptv_input_t   *iptv_input;
 extern iptv_network_t *iptv_network;
 
 
-void iptv_bouquet_trigger(iptv_network_t *in, int timeout);
 int iptv_url_set ( char **url, char **sane_url, const char *str, int allow_file, int allow_pipe );
 
 void iptv_mux_load_all ( void );

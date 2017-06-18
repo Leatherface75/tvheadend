@@ -105,6 +105,7 @@ static int epggrab_mod_class_type_set(void *o, const void *v)
 }
 
 CLASS_DOC(epggrabber_modules)
+PROP_DOC(epggrabber_priority)
 
 const idclass_t epggrab_mod_class = {
   .ic_class      = "epggrab_mod",
@@ -153,12 +154,13 @@ const idclass_t epggrab_mod_class = {
       .type   = PT_INT,
       .id     = "priority",
       .name   = N_("Priority"),
-      .desc   = N_("Grabber priority. This option lets you pick which "
-                   "EPG grabber's data gets used first if more than one "
-                   "grabber is enabled. Priority is given to the grabber "
-                   "with the highest value set here."),
+      .desc   = N_("Grabber priority. This option let's you pick which "
+                   "EPG grabber's data get used first. Priority is "
+                   "given to the grabber with the highest value set here. "
+                   "See Help for more info."),
+      .doc    = prop_doc_epggrabber_priority,
       .off    = offsetof(epggrab_module_t, priority),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
       .group  = 1
     },
     {}
@@ -605,6 +607,7 @@ epggrab_module_ota_t *epggrab_module_ota_create
   skel->start    = ops->start;
   skel->done     = ops->done;
   skel->tune     = ops->tune;
+  skel->opaque   = ops->opaque;
 
   return skel;
 }

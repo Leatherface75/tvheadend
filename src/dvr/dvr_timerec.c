@@ -185,9 +185,10 @@ dvr_timerec_create(const char *uuid, htsmsg_t *conf)
 
   dte->dte_title = strdup("Time-%F_%R");
   dte->dte_weekdays = 0x7f;
-  dte->dte_pri = DVR_PRIO_NORMAL;
+  dte->dte_pri = DVR_PRIO_DEFAULT;
   dte->dte_start = -1;
   dte->dte_stop = -1;
+  dte->dte_enabled = 1;
   dte->dte_config = dvr_config_find_by_name_default(NULL);
   LIST_INSERT_HEAD(&dte->dte_config->dvr_timerec_entries, dte, dte_config_link);
 
@@ -355,7 +356,7 @@ dvr_timerec_entry_class_channel_rend(void *o, const char *lang)
 {
   dvr_timerec_entry_t *dte = (dvr_timerec_entry_t *)o;
   if (dte->dte_channel)
-    return strdup(channel_get_name(dte->dte_channel));
+    return strdup(channel_get_name(dte->dte_channel, tvh_gettext_lang(lang, channel_blank_name)));
   return NULL;
 }
 
@@ -536,6 +537,7 @@ const idclass_t dvr_timerec_entry_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the entry."),
+      .def.i    = 1,
       .off      = offsetof(dvr_timerec_entry_t, dte_enabled),
     },
     {
@@ -553,6 +555,7 @@ const idclass_t dvr_timerec_entry_class = {
       .doc      = prop_doc_dvr_timerec_title_format,
       .off      = offsetof(dvr_timerec_entry_t, dte_title),
       .def.s    = "Time-%F_%R",
+      .opts     = PO_ADVANCED
     },
     {
       .type     = PT_STR,
@@ -614,9 +617,12 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_U32,
       .id       = "pri",
       .name     = N_("Priority"),
-      .desc     = N_("Priority of the entry, higher-priority entries will take precedence and cancel lower-priority events."),
+      .desc     = N_("Priority of the recording. Higher priority entries "
+                     "will take precedence and cancel lower-priority events. "
+                     "The 'Not Set' value inherits the settings from "
+                     "the assigned DVR configuration."),
       .list     = dvr_entry_class_pri_list,
-      .def.i    = DVR_PRIO_NORMAL,
+      .def.i    = DVR_PRIO_DEFAULT,
       .off      = offsetof(dvr_timerec_entry_t, dte_pri),
       .opts     = PO_SORTKEY | PO_ADVANCED | PO_DOC_NLIST,
     },
@@ -625,7 +631,7 @@ const idclass_t dvr_timerec_entry_class = {
       .id       = "retention",
       .name     = N_("DVR log retention"),
       .desc     = N_("Number of days to retain entry information."),
-      .def.i    = DVR_RET_DVRCONFIG,
+      .def.i    = DVR_RET_REM_DVRCONFIG,
       .off      = offsetof(dvr_timerec_entry_t, dte_retention),
       .list     = dvr_entry_class_retention_list,
       .opts     = PO_EXPERT | PO_DOC_NLIST,
@@ -635,7 +641,7 @@ const idclass_t dvr_timerec_entry_class = {
       .id       = "removal",
       .name     = N_("DVR file retention period"),
       .desc     = N_("Number of days to keep the recorded file."),
-      .def.i    = DVR_RET_DVRCONFIG,
+      .def.i    = DVR_RET_REM_DVRCONFIG,
       .off      = offsetof(dvr_timerec_entry_t, dte_removal),
       .list     = dvr_entry_class_removal_list,
       .opts     = PO_ADVANCED | PO_DOC_NLIST,
@@ -788,14 +794,9 @@ uint32_t
 dvr_timerec_get_retention_days( dvr_timerec_entry_t *dte )
 {
   if (dte->dte_retention > 0) {
-    if (dte->dte_retention > DVR_RET_FOREVER)
-      return DVR_RET_FOREVER;
-
-    /* As we need the db entry when deleting the file on disk */
-    if (dvr_timerec_get_removal_days(dte) != DVR_RET_FOREVER &&
-        dvr_timerec_get_removal_days(dte) > dte->dte_retention)
-      return DVR_RET_ONREMOVE;
-
+    if (dte->dte_retention > DVR_RET_REM_FOREVER)
+      return DVR_RET_REM_FOREVER;
+      
     return dte->dte_retention;
   }
   return dvr_retention_cleanup(dte->dte_config->dvr_retention_days);
@@ -808,8 +809,8 @@ uint32_t
 dvr_timerec_get_removal_days( dvr_timerec_entry_t *dte )
 {
   if (dte->dte_removal > 0) {
-    if (dte->dte_removal > DVR_RET_FOREVER)
-      return DVR_RET_FOREVER;
+    if (dte->dte_removal > DVR_RET_REM_FOREVER)
+      return DVR_RET_REM_FOREVER;
 
     return dte->dte_removal;
   }

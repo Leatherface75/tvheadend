@@ -106,9 +106,9 @@ int mpegts_pid_del_group ( mpegts_apids_t *pids, mpegts_apids_t *vals );
 int mpegts_pid_find_windex ( mpegts_apids_t *pids, uint16_t pid, uint16_t weight );
 int mpegts_pid_find_rindex ( mpegts_apids_t *pids, uint16_t pid );
 static inline int mpegts_pid_wexists ( mpegts_apids_t *pids, uint16_t pid, uint16_t weight )
-  { return pids->all || mpegts_pid_find_windex(pids, pid, weight) >= 0; }
+  { return pids && (pids->all || mpegts_pid_find_windex(pids, pid, weight) >= 0); }
 static inline int mpegts_pid_rexists ( mpegts_apids_t *pids, uint16_t pid )
-  { return pids->all || mpegts_pid_find_rindex(pids, pid) >= 0; }
+  { return pids && (pids->all || mpegts_pid_find_rindex(pids, pid) >= 0); }
 int mpegts_pid_copy ( mpegts_apids_t *dst, mpegts_apids_t *src );
 int mpegts_pid_compare ( mpegts_apids_t *dst, mpegts_apids_t *src,
                          mpegts_apids_t *add, mpegts_apids_t *del );
@@ -134,7 +134,8 @@ struct mpegts_pcr {
   uint16_t pcr_pid;
 };
 
-#define MPEGTS_DATA_CC_RESTART (1<<0)
+#define MPEGTS_DATA_CC_RESTART		(1<<0)
+#define MPEGTS_DATA_REMOVE_SCRAMBLED	(1<<1)
 
 typedef int (*mpegts_table_callback_t)
   ( mpegts_table_t*, const uint8_t *buf, int len, int tableid );
@@ -329,12 +330,15 @@ struct mpegts_network
   mpegts_mux_queue_t mn_scan_pend;    // Pending muxes
   mpegts_mux_queue_t mn_scan_active;  // Active muxes
   mtimer_t           mn_scan_timer;   // Timer for activity
+  mtimer_t           mn_bouquet_timer;
 
   /*
    * Functions
    */
   void              (*mn_delete)       (mpegts_network_t*, int delconf);
   void              (*mn_display_name) (mpegts_network_t*, char *buf, size_t len);
+  int               (*mn_bouquet_source) (mpegts_network_t*, char *buf, size_t len);
+  int               (*mn_bouquet_comment) (mpegts_network_t*, char *buf, size_t len);
   htsmsg_t *        (*mn_config_save)  (mpegts_network_t*, char *filename, size_t fsize);
   mpegts_mux_t*     (*mn_create_mux)
     (mpegts_network_t*, void *origin, uint16_t onid, uint16_t tsid,
@@ -351,6 +355,7 @@ struct mpegts_network
   uint16_t mn_satip_source;
   int      mn_autodiscovery;
   int      mn_skipinitscan;
+  int      mn_bouquet;
   char    *mn_charset;
   int      mn_idlescan;
   int      mn_ignore_chnum;
@@ -433,6 +438,7 @@ struct mpegts_mux
   int                     mm_tsid_checks;
   int                     mm_tsid_accept_zero_value;
   tvhlog_limit_t          mm_tsid_loglimit;
+  int64_t                 mm_start_monoclock;
 
   int                     mm_update_pids_flag;
   mtimer_t                mm_update_pids_timer;
@@ -521,20 +527,22 @@ struct mpegts_mux
   /*
    * Configuration
    */
-  char *mm_crid_authority;
-  int   mm_enabled;
-  int   mm_epg;
-  char *mm_charset;
-  int   mm_pmt_ac3;
-  int   mm_eit_tsid_nocheck;
+  char    *mm_crid_authority;
+  int      mm_enabled;
+  int      mm_epg;
+  char    *mm_charset;
+  int      mm_pmt_ac3;
+  int      mm_eit_tsid_nocheck;
+  uint16_t mm_sid_filter;
 
   /*
    * TSDEBUG
    */
 #if ENABLE_TSDEBUG
-  int   mm_tsdebug_fd;
-  int   mm_tsdebug_fd2;
-  off_t mm_tsdebug_pos;
+  pthread_mutex_t mm_tsdebug_lock;
+  int             mm_tsdebug_fd;
+  int             mm_tsdebug_fd2;
+  off_t           mm_tsdebug_pos;
   TAILQ_HEAD(, tsdebug_packet) mm_tsdebug_packets;
 #endif
 };
@@ -577,7 +585,6 @@ struct mpegts_service
   char    *s_dvb_charset;
   uint16_t s_dvb_prefcapid;
   int      s_dvb_prefcapid_lock;
-  uint16_t s_dvb_forcecaid;
   time_t   s_dvb_created;
   time_t   s_dvb_last_seen;
   time_t   s_dvb_check_seen;
@@ -654,6 +661,12 @@ struct mpegts_mux_sub
   int                       mms_weight;
 };
 
+enum mpegts_input_is_enabled {
+  MI_IS_ENABLED_RETRY = -1,
+  MI_IS_ENABLED_NEVER = 0,
+  MI_IS_ENABLED_OK = 1,
+};
+
 /* Input source */
 struct mpegts_input
 {
@@ -704,6 +717,7 @@ struct mpegts_input
   TAILQ_HEAD(,mpegts_packet)      mi_input_queue;
   uint64_t                        mi_input_queue_size;
   tvhlog_limit_t                  mi_input_queue_loglimit;
+  int                             mi_remove_scrambled_bits;
 
   /* Data processing/output */
   // Note: this lock (mi_output_lock) protects all the remaining
@@ -813,6 +827,7 @@ const void *mpegts_input_class_network_get  ( void *o );
 int         mpegts_input_class_network_set  ( void *o, const void *p );
 htsmsg_t   *mpegts_input_class_network_enum ( void *o, const char *lang );
 char       *mpegts_input_class_network_rend ( void *o, const char *lang );
+const void *mpegts_input_class_active_get   ( void *o );
 
 int mpegts_mps_weight(elementary_stream_t *st);
 
@@ -845,6 +860,9 @@ static inline mpegts_network_t *mpegts_network_find(const char *uuid)
 mpegts_mux_t *mpegts_network_find_mux
   (mpegts_network_t *mn, uint16_t onid, uint16_t tsid, int check);
 
+mpegts_service_t *mpegts_network_find_active_service
+  (mpegts_network_t *mn, uint16_t sid, mpegts_mux_t **rmm);
+
 void mpegts_network_class_delete ( const idclass_t *idc, int delconf );
 
 void mpegts_network_delete ( mpegts_network_t *mn, int delconf );
@@ -853,6 +871,10 @@ int mpegts_network_set_nid          ( mpegts_network_t *mn, uint16_t nid );
 int mpegts_network_set_network_name ( mpegts_network_t *mn, const char *name );
 void mpegts_network_scan ( mpegts_network_t *mn );
 void mpegts_network_get_type_str( mpegts_network_t *mn, char *buf, size_t buflen );
+
+void mpegts_network_bouquet_trigger0(mpegts_network_t *mn, int timeout);
+static inline void mpegts_network_bouquet_trigger(mpegts_network_t *mn, int timeout)
+{ if (mn->mn_bouquet) mpegts_network_bouquet_trigger0(mn, timeout); }
 
 htsmsg_t * mpegts_network_wizard_get ( mpegts_input_t *mi, const idclass_t *idc,
                                        mpegts_network_t *mn, const char *lang );
@@ -985,27 +1007,36 @@ int mpegts_input_close_pid
 void mpegts_input_close_pids
   ( mpegts_input_t *mi, mpegts_mux_t *mm, void *owner, int all );
 
+#if ENABLE_TSDEBUG
+
+void tsdebug_started_mux(mpegts_input_t *mi, mpegts_mux_t *mm);
+void tsdebug_stopped_mux(mpegts_input_t *mi, mpegts_mux_t *mm);
+void tsdebug_check_tspkt(mpegts_mux_t *mm, uint8_t *pkt, int len);
+
 static inline void
 tsdebug_write(mpegts_mux_t *mm, uint8_t *buf, size_t len)
 {
-#if ENABLE_TSDEBUG
   if (mm && mm->mm_tsdebug_fd2 >= 0)
     if (write(mm->mm_tsdebug_fd2, buf, len) != len)
-      tvherror("tsdebug", "unable to write input data (%i)", errno);
-#endif
+      tvherror(LS_TSDEBUG, "unable to write input data (%i)", errno);
 }
 
 static inline ssize_t
 sbuf_tsdebug_read(mpegts_mux_t *mm, sbuf_t *sb, int fd)
 {
-#if ENABLE_TSDEBUG
   ssize_t r = sbuf_read(sb, fd);
   tsdebug_write(mm, sb->sb_data + sb->sb_ptr - r, r);
   return r;
-#else
-  return sbuf_read(sb, fd);
-#endif
 }
+
+#else
+
+static inline void tsdebug_started_mux(mpegts_input_t *mi, mpegts_mux_t *mm) { return; }
+static inline void tsdebug_stopped_mux(mpegts_input_t *mi, mpegts_mux_t *mm) { return; }
+static inline void tsdebug_write(mpegts_mux_t *mm, uint8_t *buf, size_t len) { return; }
+static inline ssize_t sbuf_tsdebug_read(mpegts_mux_t *mm, sbuf_t *sb, int fd) { return sbuf_read(sb, fd); }
+
+#endif
 
 void mpegts_table_dispatch
   (const uint8_t *sec, size_t r, void *mt);
@@ -1102,6 +1133,8 @@ static inline mpegts_service_t *mpegts_service_find_by_uuid(const char *uuid)
 void mpegts_service_unref ( service_t *s );
 
 void mpegts_service_delete ( service_t *s, int delconf );
+
+int64_t mpegts_service_channel_number ( service_t *s );
 
 /*
  * MPEG-TS event handler

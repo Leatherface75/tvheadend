@@ -19,7 +19,7 @@
 #ifndef EPG_H
 #define EPG_H
 
-#include <regex.h>
+#include "tvhregex.h"
 #include "settings.h"
 #include "lang_str.h"
 #include "access.h"
@@ -128,6 +128,13 @@ typedef enum epg_object_type
 #define EPG_CHANGED_IMAGE         (1<<5)
 #define EPG_CHANGED_SLAST         2
 
+typedef struct epg_object_ops {
+  void (*getref)  ( void *o );        ///< Get a reference
+  int  (*putref)  ( void *o ); 	      ///< Release a reference
+  void (*destroy) ( void *o );        ///< Delete the object
+  void (*update)  ( void *o );        ///< Updated
+} epg_object_ops_t;
+
 /* Object */
 struct epg_object
 {
@@ -148,10 +155,7 @@ struct epg_object
 
   struct epggrab_module  *grabber;    ///< Originating grabber
 
-  void (*getref)  ( void *o );        ///< Get a reference
-  void (*putref)  ( void *o ); 	      ///< Release a reference
-  void (*destroy) ( void *o );        ///< Delete the object
-  void (*update)  ( void *o );        ///< Updated
+  epg_object_ops_t       *ops;        ///< Operations on the object
 };
 
 /* Get an object by ID (special case usage) */
@@ -600,6 +604,8 @@ epg_broadcast_t *epg_broadcast_deserialize
 
 /* Unlink */
 void epg_channel_unlink ( struct channel *ch );
+/* Match now / next events */
+epg_broadcast_t *epg_match_now_next ( struct channel *ch, epg_broadcast_t *ebc );
 
 /* ************************************************************************
  * Global config
@@ -622,9 +628,9 @@ typedef enum {
 } epg_comp_t;
 
 typedef struct epg_filter_str {
-  char      *str;
-  regex_t    re;
-  epg_comp_t comp;
+  char       *str;
+  tvh_regex_t re;
+  epg_comp_t  comp;
 } epg_filter_str_t;
 
 typedef struct epg_filter_num {
@@ -651,7 +657,7 @@ typedef struct epg_query {
   epg_filter_str_t  channel_name;
   epg_filter_num_t  channel_num;
   char             *stitle;
-  regex_t           stitle_re;
+  tvh_regex_t       stitle_re;
   int               fulltext;
   char             *channel;
   char             *channel_tag;

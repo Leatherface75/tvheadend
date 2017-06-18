@@ -100,6 +100,7 @@ dvb_network_scanfile_set ( dvb_network_t *ln, const char *id )
       }
     }
   }
+  scanfile_clean(sfn);
   return;
 }
 
@@ -519,7 +520,7 @@ dvb_network_find_mux
 
     /* if ONID/TSID are a perfect match (and this is DVB-S, allow greater deltaf) */
     if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_S) {
-      deltar = 10000;
+      deltar = 7000;
       if (onid != MPEGTS_ONID_NONE && tsid != MPEGTS_TSID_NONE) {
         deltaf = 16000; // This is slightly crazy, but I have seen 10MHz changes in freq
                         // and remember the ONID and TSID must agree
@@ -539,6 +540,9 @@ dvb_network_find_mux
     /* Reject if not same symbol rate (some tolerance due to changes and diff in NIT) */
     if (dvb_network_check_symbol_rate(lm, dmc, deltar)) continue;
 
+    /* Reject if not same polarisation */
+    if (lm->lm_tuning.u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation) continue;
+
     /* DVB-S extra checks */
     if (!approx_match && (lm->lm_tuning.dmc_fe_type == DVB_TYPE_S)) {
 
@@ -549,9 +553,6 @@ dvb_network_find_mux
 
       /* Same FEC */
       if (lm->lm_tuning.u.dmc_fe_qpsk.fec_inner != dmc->u.dmc_fe_qpsk.fec_inner) continue;
-
-      /* Same polarisation */
-      if (lm->lm_tuning.u.dmc_fe_qpsk.polarisation != dmc->u.dmc_fe_qpsk.polarisation) continue;
 
       /* Same orbital position */
       if (dvb_network_check_orbital_pos(lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos,
@@ -719,10 +720,12 @@ dvb_network_create_mux
     tuning_new = tuning_old = lm->lm_tuning;
     /* Always save the orbital position */
     if (dmc->dmc_fe_type == DVB_TYPE_S) {
-      if (tuning_new.u.dmc_fe_qpsk.orbital_pos == INT_MAX ||
+      if (dmc->u.dmc_fe_qpsk.orbital_pos == INT_MAX ||
           dvb_network_check_orbital_pos(tuning_new.u.dmc_fe_qpsk.orbital_pos,
-                                        dmc->u.dmc_fe_qpsk.orbital_pos))
+                                        dmc->u.dmc_fe_qpsk.orbital_pos)) {
         save |= COMPARE(u.dmc_fe_qpsk.orbital_pos, CBIT_ORBITAL_POS);
+        tuning_new.u.dmc_fe_qpsk.orbital_pos = dmc->u.dmc_fe_qpsk.orbital_pos;
+      }
     }
     /* Do not change anything else without autodiscovery flag */
     if (!ln->mn_autodiscovery)

@@ -657,7 +657,7 @@ static int _xmltv_parse_channel
       int n = 0;
 
       name = htsmsg_get_str(subtag, "cdata");
-      if (chnum) {
+      if (chnum && name) {
         while (isdigit(*(name + n))) n++;
         if (n > 0) {
           if (*(name + n) == 0 || (*(name + n) == ' ' && chnum == 1)) {
@@ -667,7 +667,7 @@ static int _xmltv_parse_channel
           }
         }
       }
-      if (*name)
+      if (name && *name)
         htsmsg_add_str_exclusive(dnames, name);
     }
     else if (strcmp(f->hmf_name, "icon") == 0) {
@@ -843,7 +843,7 @@ static void _xmltv_load_grabbers ( void )
   /* Internal search */
   } else if ((tmp = getenv("PATH"))) {
     tvhdebug(LS_XMLTV, "using internal grab search");
-    char bin[256];
+    char bin[PATH_MAX];
     char *argv[] = {
       NULL,
       (char *)"--description",

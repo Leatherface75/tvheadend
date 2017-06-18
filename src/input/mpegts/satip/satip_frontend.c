@@ -186,6 +186,17 @@ const idclass_t satip_frontend_class =
       .off      = offsetof(satip_frontend_t, sf_play2),
     },
     {
+      .type     = PT_INT,
+      .id       = "grace_period",
+      .name     = N_("Grace period"),
+      .desc     = N_("Force the grace period for which SAT>IP client waits "
+                     "for the data from server. After this grace period, "
+                     "the tuner is handled as dead. The default value is "
+                     "5 seconds (for DVB-S/S2: 10 seconds)."),
+      .opts     = PO_ADVANCED,
+      .off      = offsetof(satip_frontend_t, sf_grace_period),
+    },
+    {
       .type     = PT_BOOL,
       .id       = "teardown_delay",
       .name     = N_("Force teardown delay"),
@@ -449,7 +460,7 @@ static int
 satip_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
 {
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
-  int r = 5;
+  int r = lfe->sf_grace_period > 0 ? MINMAX(lfe->sf_grace_period, 1, 60) : 5;
   if (lfe->sf_positions || lfe->sf_master)
     r = MINMAX(satip_satconf_get_grace(lfe, mm) ?: 10, r, 60);
   return r;
@@ -521,31 +532,39 @@ satip_frontend_is_enabled
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
   satip_frontend_t *lfe2;
   satip_satconf_t *sfc;
+  int r;
 
   lock_assert(&global_lock);
 
-  if (!mpegts_input_is_enabled(mi, mm, flags, weight)) return 0;
-  if (lfe->sf_device->sd_dbus_allow <= 0) return 0;
-  if (lfe->sf_type != DVB_TYPE_S) return 1;
+  r = mpegts_input_is_enabled(mi, mm, flags, weight);
+  if (r != MI_IS_ENABLED_OK)
+    return r;
+  if (lfe->sf_device->sd_dbus_allow <= 0)
+    return MI_IS_ENABLED_NEVER;
+  if (mm == NULL)
+    return MI_IS_ENABLED_OK;
+  if (lfe->sf_type != DVB_TYPE_S)
+    return MI_IS_ENABLED_OK;
   /* check if the position is enabled */
   sfc = satip_satconf_get_position(lfe, mm, NULL, 1, flags, weight);
-  if (!sfc)
-    return 0;
+  if (!sfc) return MI_IS_ENABLED_NEVER;
   /* check if any "blocking" tuner is running */
   TAILQ_FOREACH(lfe2, &lfe->sf_device->sd_frontends, sf_link) {
     if (lfe2 == lfe) continue;
     if (lfe2->sf_type != DVB_TYPE_S) continue;
     if (lfe->sf_master == lfe2->sf_number) {
       if (!lfe2->sf_running)
-        return 0; /* master must be running */
-      return satip_frontend_match_satcfg(lfe2, mm, flags, weight);
+        return MI_IS_ENABLED_RETRY; /* master must be running */
+      return satip_frontend_match_satcfg(lfe2, mm, flags, weight) ?
+             MI_IS_ENABLED_OK : MI_IS_ENABLED_RETRY;
     }
     if (lfe2->sf_master == lfe->sf_number) {
       if (lfe2->sf_running)
-        return satip_frontend_match_satcfg(lfe2, mm, flags, weight);
+        return satip_frontend_match_satcfg(lfe2, mm, flags, weight) ?
+               MI_IS_ENABLED_OK : MI_IS_ENABLED_RETRY;
     }
   }
-  return 1;
+  return MI_IS_ENABLED_OK;
 }
 
 static void
@@ -695,6 +714,10 @@ satip_frontend_update_pids
           mpegts_pid_add(&tr->sf_pids, mp->mp_pid, mps->mps_weight);
       }
     }
+    if (lfe->sf_device->sd_pids0)
+      mpegts_pid_add(&tr->sf_pids, 0, MPS_WEIGHT_PMT_SCAN);
+    if (lfe->sf_device->sd_pids21)
+      mpegts_pid_add(&tr->sf_pids, 21, MPS_WEIGHT_PMT_SCAN);
   }
   pthread_mutex_unlock(&lfe->sf_dvr_lock);
 
@@ -1062,6 +1085,9 @@ satip_frontend_wake_other_waiting
   if (tr == NULL)
     return;
 
+  if (atomic_add(&lfe->sf_device->sd_wake_ref, 1) > 0)
+    goto end;
+
   hash1 = tr->sf_netposhash;
 
   TAILQ_FOREACH(lfe2, &lfe->sf_device->sd_frontends, sf_link) {
@@ -1070,12 +1096,16 @@ satip_frontend_wake_other_waiting
     if ((lfe->sf_master && lfe2->sf_number != lfe->sf_master) ||
         (lfe2->sf_master && lfe->sf_number != lfe2->sf_master))
       continue;
-    pthread_mutex_lock(&lfe2->sf_dvr_lock);
+    while (pthread_mutex_trylock(&lfe2->sf_dvr_lock))
+      tvh_usleep(1000);
     hash2 = lfe2->sf_req ? lfe2->sf_req->sf_netposhash : 0;
     if (hash2 != 0 && hash1 != hash2 && lfe2->sf_running)
       tvh_write(lfe2->sf_dvr_pipe.wr, "o", 1);
     pthread_mutex_unlock(&lfe2->sf_dvr_lock);
   }
+
+end:
+  atomic_dec(&lfe->sf_device->sd_wake_ref, 1);
 }
 
 static void
@@ -1266,7 +1296,7 @@ satip_frontend_rtp_data_received( http_client_t *hc, void *buf, size_t len )
       pos += (((p[pos+2] << 8) | p[pos+3]) + 1) * 4;
     }
     r = c - pos;
-    if (c <= pos || (r % 188) != 0)
+    if (c < pos || (r % 188) != 0)
       return 0;
     /* Use uncorrectable value to notify RTP delivery issues */
     nseq = (p[2] << 8) | p[3];
@@ -1278,6 +1308,8 @@ satip_frontend_rtp_data_received( http_client_t *hc, void *buf, size_t len )
       tvhtrace(LS_SATIP, "TCP/RTP discontinuity (%i != %i)", lfe->sf_seq + 1, nseq);
     }
     lfe->sf_seq = nseq;
+    if (r == 0)
+      return 0;
 
     /* Process */
     if (lfe->sf_skip_ts > 0) {
@@ -1848,7 +1880,7 @@ new_tune:
         pos += (((p[pos+2] << 8) | p[pos+3]) + 1) * 4;
       }
       r = c - pos;
-      if (c <= pos || (r % 188) != 0)
+      if (c < pos || (r % 188) != 0)
         continue;
       /* Use uncorrectable value to notify RTP delivery issues */
       nseq = (p[2] << 8) | p[3];
@@ -1859,6 +1891,8 @@ new_tune:
         tvhtrace(LS_SATIP, "RTP discontinuity (%i != %i)", seq + 1, nseq);
       }
       seq = nseq;
+      if (r == 0)
+        continue;
       /* Process */
       if (lfe->sf_skip_ts > 0) {
         if (lfe->sf_skip_ts < r) {

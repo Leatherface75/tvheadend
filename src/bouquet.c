@@ -24,6 +24,7 @@
 #include "channels.h"
 #include "service_mapper.h"
 #include "download.h"
+#include "input.h"
 
 typedef struct bouquet_download {
   bouquet_t  *bq;
@@ -34,7 +35,6 @@ typedef struct bouquet_download {
 bouquet_tree_t bouquets;
 
 static void bouquet_remove_service(bouquet_t *bq, service_t *s, int delconf);
-static uint64_t bouquet_get_channel_number0(bouquet_t *bq, service_t *t);
 static void bouquet_download_trigger(bouquet_t *bq);
 static void bouquet_download_stop(void *aux);
 static int bouquet_download_process(void *aux, const char *last_url, const char *host_url, char *data, size_t len);
@@ -95,6 +95,9 @@ bouquet_create(const char *uuid, htsmsg_t *conf,
   bq->bq_active_services = idnode_set_create(1);
   bq->bq_ext_url_period = 60;
   bq->bq_mapencrypted = 1;
+  bq->bq_mapradio = 1;
+  bq->bq_maptoch = 1;
+  bq->bq_chtag = 1;
 
   if (idnode_insert(&bq->bq_id, uuid, &bouquet_class, 0)) {
     if (uuid)
@@ -298,8 +301,7 @@ bouquet_map_channel(bouquet_t *bq, service_t *t)
   if (!bq->bq_mapradio && service_is_radio(t))
     return;
   if (!bq->bq_mapnolcn &&
-      (bq->bq_only_bq_lcn || service_get_channel_number(t) <= 0) &&
-      bouquet_get_channel_number0(bq, t) <= 0)
+      bouquet_get_channel_number(bq, t) <= 0)
     return;
   if (!bq->bq_mapnoname && noname(service_get_channel_name(t)))
     return;
@@ -337,7 +339,9 @@ bouquet_add_service(bouquet_t *bq, service_t *s, uint64_t lcn, const char *tag)
     return;
 
   if (!idnode_set_exists(bq->bq_services, &s->s_id)) {
-    tvhtrace(LS_BOUQUET, "add service %s to %s", s->s_nicename, bq->bq_name ?: "<unknown>");
+    tvhtrace(LS_BOUQUET, "add service %s [%p] to %s lcn %"PRIu64"(.%"PRIu64")",
+             s->s_nicename, s, bq->bq_name ?: "<unknown>",
+             lcn / CHANNEL_SPLIT, lcn % CHANNEL_SPLIT);
     idnode_set_add(bq->bq_services, &s->s_id, NULL, NULL);
     bq->bq_saveflag = 1;
   }
@@ -362,12 +366,6 @@ bouquet_add_service(bouquet_t *bq, service_t *s, uint64_t lcn, const char *tag)
   }
   tl->sl_seen = 1;
 
-  if (lcn) {
-    bq->bq_only_bq_lcn = 1;
-    if (bq->bq_last_lcn < lcn)
-      bq->bq_last_lcn = lcn;
-  }
-
   if (bq->bq_enabled && bq->bq_maptoch)
     bouquet_map_channel(bq, s);
 
@@ -389,8 +387,8 @@ bouquet_unmap_channel(bouquet_t *bq, service_t *t)
     ilm_next = LIST_NEXT(ilm, ilm_in1_link);
     if (((channel_t *)ilm->ilm_in2)->ch_bouquet == bq) {
       tvhinfo(LS_BOUQUET, "%s / %s: unmapped from %s",
-              channel_get_name((channel_t *)ilm->ilm_in2), t->s_nicename,
-              bq->bq_name ?: "<unknown>");
+              channel_get_name((channel_t *)ilm->ilm_in2, channel_blank_name),
+              t->s_nicename, bq->bq_name ?: "<unknown>");
       channel_delete((channel_t *)ilm->ilm_in2, 1);
     }
     ilm = ilm_next;
@@ -542,28 +540,14 @@ bouquet_notify_channels(bouquet_t *bq)
 /*
  *
  */
-static uint64_t
-bouquet_get_channel_number0(bouquet_t *bq, service_t *t)
+uint64_t
+bouquet_get_channel_number(bouquet_t *bq, service_t *t)
 {
   service_lcn_t *tl;
 
   LIST_FOREACH(tl, &t->s_lcns, sl_link)
     if (tl->sl_bouquet == bq)
       return (int64_t)tl->sl_lcn;
-  return 0;
-}
-
-/*
- *
- */
-uint64_t
-bouquet_get_channel_number(bouquet_t *bq, service_t *t)
-{
-  int64_t r = bouquet_get_channel_number0(bq, t);
-  if (r)
-    return r;
-  if (bq->bq_only_bq_lcn)
-    return bq->bq_last_lcn + 10 * CHANNEL_SPLIT;
   return 0;
 }
 
@@ -616,15 +600,56 @@ void
 bouquet_scan ( bouquet_t *bq )
 {
   void mpegts_mux_bouquet_rescan ( const char *src, const char *extra );
-  void iptv_bouquet_trigger_by_uuid( const char *uuid );
+  char *mpegts_network_uuid = NULL;
+  if (bq->bq_src) {
 #if ENABLE_IPTV
-  if (bq->bq_src && strncmp(bq->bq_src, "iptv-network://", 15) == 0)
-    return iptv_bouquet_trigger_by_uuid(bq->bq_src + 15);
+    if (strncmp(bq->bq_src, "iptv-network://", 15) == 0)
+      mpegts_network_uuid = bq->bq_src + 15;
 #endif
-  if (bq->bq_src && strncmp(bq->bq_src, "exturl://", 9) == 0)
-    return bouquet_download_trigger(bq);
+    if (strncmp(bq->bq_src, "mpegts-network://", 17) == 0)
+      mpegts_network_uuid = bq->bq_src + 17;
+    else if (strncmp(bq->bq_src, "exturl://", 9) == 0)
+      return bouquet_download_trigger(bq);
+
+    if (mpegts_network_uuid) {
+      mpegts_network_t *mn = mpegts_network_find(mpegts_network_uuid);
+      if (mn)
+        return mpegts_network_bouquet_trigger(mn, 0);
+    }
+  }
   mpegts_mux_bouquet_rescan(bq->bq_src, bq->bq_comment);
   bq->bq_rescan = 0;
+}
+
+/*
+ *
+ */
+void
+bouquet_detach ( channel_t *ch )
+{
+  bouquet_t *bq = ch->ch_bouquet;
+  idnode_list_mapping_t *ilm;
+  service_lcn_t *tl;
+  service_t *t;
+  int64_t n = 0;
+
+  if (!bq)
+    return;
+  LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
+    t = (service_t *)ilm->ilm_in1;
+    LIST_FOREACH(tl, &t->s_lcns, sl_link)
+      if (tl->sl_bouquet == bq) {
+        n = (int64_t)tl->sl_lcn;
+        goto found;
+      }
+  }
+found:
+  if (n) {
+    n += (int64_t)ch->ch_bouquet->bq_lcn_offset * CHANNEL_SPLIT;
+    ch->ch_number = n;
+  }
+  ch->ch_bouquet = NULL;
+  idnode_changed(&ch->ch_id);
 }
 
 /* **************************************************************************
@@ -899,7 +924,7 @@ bouquet_class_services_get ( void *obj )
   for (z = 0; z < bq->bq_services->is_count; z++) {
     t = (service_t *)bq->bq_services->is_array[z];
     e = htsmsg_create_map();
-    if ((lcn = bouquet_get_channel_number0(bq, t)) != 0)
+    if ((lcn = bouquet_get_channel_number(bq, t)) != 0)
       htsmsg_add_s64(e, "lcn", lcn);
     if ((tag = bouquet_get_tag_name(bq, t)) != NULL)
       htsmsg_add_str(e, "tag", tag);
@@ -967,6 +992,7 @@ const idclass_t bouquet_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the bouquet."),
+      .def.i    = 1,
       .off      = offsetof(bouquet_t, bq_enabled),
       .notify   = bouquet_class_enabled_notify,
     },

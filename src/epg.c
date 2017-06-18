@@ -20,12 +20,12 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <regex.h>
 #include <assert.h>
 #include <inttypes.h>
 #include <time.h>
 
 #include "tvheadend.h"
+#include "config.h"
 #include "queue.h"
 #include "channels.h"
 #include "settings.h"
@@ -124,7 +124,7 @@ void epg_updated ( void )
     tvhtrace(LS_EPG,
              "unref'd object %u (%s) created during update", eo->id, eo->uri);
     LIST_REMOVE(eo, un_link);
-    eo->destroy(eo);
+    eo->ops->destroy(eo);
   }
   // Note: we do things this way around since unref'd objects are not likely
   //       to be useful to DVR since they will relate to episode/seasons/brands
@@ -132,7 +132,7 @@ void epg_updated ( void )
 
   /* Update updated */
   while ((eo = LIST_FIRST(&epg_object_updated))) {
-    eo->update(eo);
+    eo->ops->update(eo);
     LIST_REMOVE(eo, up_link);
     eo->_updated = 0;
     eo->_created = 1;
@@ -164,14 +164,18 @@ static void _epg_object_getref ( void *o )
   eo->refcount++;
 }
 
-static void _epg_object_putref ( void *o )
+static int _epg_object_putref ( void *o )
 {
   epg_object_t *eo = o;
   tvhtrace(LS_EPG, "eo [%p, %u, %d, %s] putref %d",
            eo, eo->id, eo->type, eo->uri, eo->refcount-1);
   assert(eo->refcount>0);
   eo->refcount--;
-  if (!eo->refcount) eo->destroy(eo);
+  if (!eo->refcount) {
+    eo->ops->destroy(eo);
+    return 1;
+  }
+  return 0;
 }
 
 static void _epg_object_set_updated ( void *o )
@@ -214,8 +218,6 @@ static void _epg_object_create ( void *o )
   uint32_t id = eo->id;
   if (!id) eo->id = ++_epg_object_idx;
   if (!eo->id) eo->id = ++_epg_object_idx;
-  if (!eo->getref) eo->getref = _epg_object_getref;
-  if (!eo->putref) eo->putref = _epg_object_putref;
   tvhtrace(LS_EPG, "eo [%p, %u, %d, %s] created",
            eo, eo->id, eo->type, eo->uri);
   _epg_object_set_updated(eo);
@@ -453,14 +455,20 @@ static void _epg_brand_updated ( void *o )
   dvr_autorec_check_brand((epg_brand_t*)o);
 }
 
+static epg_object_ops_t _epg_brand_ops = {
+  .getref  = _epg_object_getref,
+  .putref  = _epg_object_putref,
+  .destroy = _epg_brand_destroy,
+  .update  = _epg_brand_updated,
+};
+
 static epg_object_t **_epg_brand_skel ( void )
 {
   static epg_object_t *skel = NULL;
   if (!skel) {
     skel = calloc(1, sizeof(epg_brand_t));
-    skel->type    = EPG_BRAND;
-    skel->destroy = _epg_brand_destroy;
-    skel->update  = _epg_brand_updated;
+    skel->type = EPG_BRAND;
+    skel->ops  = &_epg_brand_ops;
   }
   return &skel;
 }
@@ -660,14 +668,20 @@ static void _epg_season_updated ( void *eo )
   dvr_autorec_check_season((epg_season_t*)eo);
 }
 
+static epg_object_ops_t _epg_season_ops = {
+  .getref  = _epg_object_getref,
+  .putref  = _epg_object_putref,
+  .destroy = _epg_season_destroy,
+  .update  = _epg_season_updated,
+};
+
 static epg_object_t **_epg_season_skel ( void )
 {
   static epg_object_t *skel = NULL;
   if (!skel) {
     skel = calloc(1, sizeof(epg_season_t));
-    skel->type    = EPG_SEASON;
-    skel->destroy = _epg_season_destroy;
-    skel->update  = _epg_season_updated;
+    skel->type = EPG_SEASON;
+    skel->ops  = &_epg_season_ops;
   }
   return &skel;
 }
@@ -914,14 +928,20 @@ static void _epg_episode_updated ( void *eo )
 {
 }
 
+static epg_object_ops_t _epg_episode_ops = {
+  .getref  = _epg_object_getref,
+  .putref  = _epg_object_putref,
+  .destroy = _epg_episode_destroy,
+  .update  = _epg_episode_updated,
+};
+
 static epg_object_t **_epg_episode_skel ( void )
 {
   static epg_object_t *skel = NULL;
   if (!skel) {
     skel = calloc(1, sizeof(epg_episode_t));
-    skel->type    = EPG_EPISODE;
-    skel->destroy = _epg_episode_destroy;
-    skel->update  = _epg_episode_updated;
+    skel->type = EPG_EPISODE;
+    skel->ops  = &_epg_episode_ops;
   }
   return &skel;
 }
@@ -1456,14 +1476,20 @@ static void _epg_serieslink_updated ( void *eo )
   dvr_autorec_check_serieslink((epg_serieslink_t*)eo);
 }
 
+static epg_object_ops_t _epg_serieslink_ops = {
+  .getref  = _epg_object_getref,
+  .putref  = _epg_object_putref,
+  .destroy = _epg_serieslink_destroy,
+  .update  = _epg_serieslink_updated,
+};
+
 static epg_object_t **_epg_serieslink_skel ( void )
 {
   static epg_object_t *skel = NULL;
   if (!skel) {
     skel = calloc(1, sizeof(epg_serieslink_t));
-    skel->type    = EPG_SERIESLINK;
-    skel->destroy = _epg_serieslink_destroy;
-    skel->update  = _epg_serieslink_updated;
+    skel->type = EPG_SERIESLINK;
+    skel->ops  = &_epg_serieslink_ops;
   }
   return &skel;
 }
@@ -1553,6 +1579,7 @@ static void _epg_channel_timer_callback ( void *p )
   time_t next = 0;
   epg_broadcast_t *ebc, *cur, *nxt;
   channel_t *ch = (channel_t*)p;
+  char tm1[32];
 
   /* Clear now/next */
   if ((cur = ch->ch_epg_now)) {
@@ -1561,10 +1588,10 @@ static void _epg_channel_timer_callback ( void *p )
       gtimer_arm_rel(&ch->ch_epg_timer, _epg_channel_timer_callback, ch, 2);
       return;
     }
-    cur->getref(cur);
+    cur->ops->getref(cur);
   }
   if ((nxt = ch->ch_epg_next))
-    nxt->getref(nxt);
+    nxt->ops->getref(nxt);
   ch->ch_epg_now = ch->ch_epg_next = NULL;
 
   /* Check events */
@@ -1574,7 +1601,7 @@ static void _epg_channel_timer_callback ( void *p )
     if ( ebc->stop <= gclk() ) {
       tvhdebug(LS_EPG, "expire event %u (%s) from %s",
                ebc->id, epg_broadcast_get_title(ebc, NULL),
-               channel_get_name(ch));
+               channel_get_name(ch, channel_blank_name));
       _epg_channel_rem_broadcast(ch, ebc, NULL);
       continue; // skip to next
 
@@ -1597,22 +1624,22 @@ static void _epg_channel_timer_callback ( void *p )
     tvhdebug(LS_EPG, "now/next %u/%u set on %s",
              ch->ch_epg_now  ? ch->ch_epg_now->id : 0,
              ch->ch_epg_next ? ch->ch_epg_next->id : 0,
-             channel_get_name(ch));
+             channel_get_name(ch, channel_blank_name));
     tvhdebug(LS_EPG, "inform HTSP of now event change on %s",
-             channel_get_name(ch));
+             channel_get_name(ch, channel_blank_name));
     htsp_channel_update_nownext(ch);
   }
 
   /* re-arm */
   if (next) {
-    tvhdebug(LS_EPG, "arm channel timer @ %"PRItime_t" for %s",
-             next, channel_get_name(ch));
+    tvhdebug(LS_EPG, "arm channel timer @ %s for %s",
+             gmtime2local(next, tm1, sizeof(tm1)), channel_get_name(ch, channel_blank_name));
     gtimer_arm_absn(&ch->ch_epg_timer, _epg_channel_timer_callback, ch, next);
   }
 
   /* Remove refs */
-  if (cur) cur->putref(cur);
-  if (nxt) nxt->putref(nxt);
+  if (cur) cur->ops->putref(cur);
+  if (nxt) nxt->ops->putref(nxt);
 }
 
 static epg_broadcast_t *_epg_channel_add_broadcast 
@@ -1621,6 +1648,16 @@ static epg_broadcast_t *_epg_channel_add_broadcast
 {
   int timer = 0;
   epg_broadcast_t *ebc, *ret;
+  char tm1[32], tm2[32];
+
+  if (!src) {
+    tvherror(LS_EPG, "skipped event (!grabber) %u (%s) on %s @ %s to %s",
+             (*bcast)->id, epg_broadcast_get_title(*bcast, NULL),
+             channel_get_name(ch, channel_blank_name),
+             gmtime2local((*bcast)->start, tm1, sizeof(tm1)),
+             gmtime2local((*bcast)->stop, tm2, sizeof(tm2)));
+    return NULL;
+  }
 
   /* Set channel */
   (*bcast)->channel = ch;
@@ -1642,9 +1679,13 @@ static epg_broadcast_t *_epg_channel_add_broadcast
       _epg_object_create(ret);
       // Note: sets updated
       _epg_object_getref(ret);
-      tvhtrace(LS_EPG, "added event %u (%s) on %s @ %"PRItime_t " to %"PRItime_t,
+      ret->grabber = src;
+      tvhtrace(LS_EPG, "added event %u (%s) on %s @ %s to %s (grabber %s)",
                ret->id, epg_broadcast_get_title(ret, NULL),
-               channel_get_name(ch), ret->start, ret->stop);
+               channel_get_name(ch, channel_blank_name),
+               gmtime2local(ret->start, tm1, sizeof(tm1)),
+               gmtime2local(ret->stop, tm2, sizeof(tm2)),
+               src->id);
 
     /* Existing */
     } else {
@@ -1659,9 +1700,12 @@ static epg_broadcast_t *_epg_channel_add_broadcast
       } else {
         ret->stop = (*bcast)->stop;
         _epg_object_set_updated(ret);
-        tvhtrace(LS_EPG, "updated event %u (%s) on %s @ %"PRItime_t " to %"PRItime_t,
+        tvhtrace(LS_EPG, "updated event %u (%s) on %s @ %s to %s (grabber %s)",
                  ret->id, epg_broadcast_get_title(ret, NULL),
-                 channel_get_name(ch), ret->start, ret->stop);
+                 channel_get_name(ch, channel_blank_name),
+                 gmtime2local(ret->start, tm1, sizeof(tm1)),
+                 gmtime2local(ret->stop, tm2, sizeof(tm2)),
+                 src->id);
       }
     }
   }
@@ -1677,9 +1721,22 @@ static epg_broadcast_t *_epg_channel_add_broadcast
       _epg_channel_rem_broadcast(ch, ret, NULL);
       return NULL;
     }
-    tvhtrace(LS_EPG, "remove overlap (b) event %u (%s) on %s @ %"PRItime_t " to %"PRItime_t,
+    if (config.epg_cut_window && ebc->stop - ebc->start > config.epg_cut_window * 2 &&
+        ebc->stop - ret->start <= config.epg_cut_window) {
+      tvhtrace(LS_EPG, "cut stop for overlap (b) event %u (%s) on %s @ %s to %s",
+               ebc->id, epg_broadcast_get_title(ebc, NULL),
+               channel_get_name(ch, channel_blank_name),
+               gmtime2local(ebc->start, tm1, sizeof(tm1)),
+               gmtime2local(ebc->stop, tm2, sizeof(tm2)));
+      ebc->stop = ret->start;
+      _epg_object_set_updated(ebc);
+      continue;
+    }
+    tvhtrace(LS_EPG, "remove overlap (b) event %u (%s) on %s @ %s to %s",
              ebc->id, epg_broadcast_get_title(ebc, NULL),
-             channel_get_name(ch), ebc->start, ebc->stop);
+             channel_get_name(ch, channel_blank_name),
+             gmtime2local(ebc->start, tm1, sizeof(tm1)),
+             gmtime2local(ebc->stop, tm2, sizeof(tm2)));
     _epg_channel_rem_broadcast(ch, ebc, ret);
   }
 
@@ -1691,9 +1748,22 @@ static epg_broadcast_t *_epg_channel_add_broadcast
       _epg_channel_rem_broadcast(ch, ret, NULL);
       return NULL;
     }
-    tvhtrace(LS_EPG, "remove overlap (a) event %u (%s) on %s @ %"PRItime_t " to %"PRItime_t,
+    if (config.epg_cut_window && ret->stop - ret->start > config.epg_cut_window * 2 &&
+        ret->stop - ebc->start <= config.epg_cut_window) {
+      tvhtrace(LS_EPG, "cut stop for overlap (a) event %u (%s) on %s @ %s to %s",
+               ebc->id, epg_broadcast_get_title(ebc, NULL),
+               channel_get_name(ch, channel_blank_name),
+               gmtime2local(ebc->start, tm1, sizeof(tm1)),
+               gmtime2local(ebc->stop, tm2, sizeof(tm2)));
+      ret->stop = ebc->start;
+      _epg_object_set_updated(ebc);
+      continue;
+    }
+    tvhtrace(LS_EPG, "remove overlap (a) event %u (%s) on %s @ %s to %s",
              ebc->id, epg_broadcast_get_title(ebc, NULL),
-             channel_get_name(ch), ebc->start, ebc->stop);
+             channel_get_name(ch, channel_blank_name),
+             gmtime2local(ebc->start, tm1, sizeof(tm1)),
+             gmtime2local(ebc->stop, tm2, sizeof(tm2)));
     _epg_channel_rem_broadcast(ch, ebc, ret);
   }
 
@@ -1705,8 +1775,10 @@ static epg_broadcast_t *_epg_channel_add_broadcast
     timer = 1;
   }
 
-  /* Reset timer */
+  /* Reset timer - it might free return event! */
+  ret->ops->getref(ret);
   if (timer) _epg_channel_timer_callback(ch);
+  if (ret->ops->putref(ret)) return NULL;
   return ret;
 }
 
@@ -1716,6 +1788,69 @@ void epg_channel_unlink ( channel_t *ch )
   while ((ebc = RB_FIRST(&ch->ch_epg_schedule)))
     _epg_channel_rem_broadcast(ch, ebc, NULL);
   gtimer_disarm(&ch->ch_epg_timer);
+}
+
+static int epg_match_event_fuzzy(epg_broadcast_t *a, epg_broadcast_t *b)
+{
+  time_t t1, t2;
+  const char *title1, *title2;
+  epg_episode_num_t num1, num2;
+
+  if (a == NULL || b == NULL)
+    return 0;
+
+  /* Matching ID */
+  if (a->dvb_eid) {
+    if (b->dvb_eid && a->dvb_eid == b->dvb_eid)
+      return 1;
+    return 0;
+  }
+
+  /* Wrong length (+/-20%) */
+  t1 = a->stop - a->start;
+  t2 = b->stop - b->start;
+  if (labs((long)(t2 - t1)) > (t1 / 5))
+    return 0;
+
+  /* No title */
+  if (!(title1 = epg_broadcast_get_title(a, NULL)))
+    return 0;
+  if (!(title2 = epg_broadcast_get_title(b, NULL)))
+    return 0;
+
+  /* Outside of window */
+  if ((int64_t)llabs(b->start - a->start) > config.epg_update_window)
+    return 0;
+
+  /* Title match (or contains?) */
+  if (strcasecmp(title1, title2))
+    return 0;
+
+  /* episode check */
+  if (a->episode && b->episode) {
+    epg_episode_get_epnum(a->episode, &num1);
+    epg_episode_get_epnum(b->episode, &num2);
+    if (epg_episode_number_cmp(&num1, &num2) == 0)
+      return 1;
+  }
+
+  return 0;
+}
+
+epg_broadcast_t *epg_match_now_next ( channel_t *ch, epg_broadcast_t *ebc )
+{
+  epg_broadcast_t *ret;
+
+  if (epg_match_event_fuzzy(ch->ch_epg_now, ebc))
+    ret = ch->ch_epg_now;
+  else if (epg_match_event_fuzzy(ch->ch_epg_next, ebc))
+    ret = ch->ch_epg_next;
+  else
+    return NULL;
+  /* update eid for further lookups */
+  if (ret->dvb_eid != ebc->dvb_eid && ret->dvb_eid == 0 && ebc->dvb_eid)
+    ret->dvb_eid = ebc->dvb_eid;
+  return ret;
 }
 
 /* **************************************************************************
@@ -1764,14 +1899,20 @@ static void _epg_broadcast_updated ( void *eo )
   }
 }
 
+static epg_object_ops_t _epg_broadcast_ops = {
+  .getref  = _epg_object_getref,
+  .putref  = _epg_object_putref,
+  .destroy = _epg_broadcast_destroy,
+  .update  = _epg_broadcast_updated,
+};
+
 static epg_broadcast_t **_epg_broadcast_skel ( void )
 {
   static epg_broadcast_t *skel = NULL;
   if (!skel) {
     skel = calloc(1, sizeof(epg_broadcast_t));
-    skel->type    = EPG_BROADCAST;
-    skel->destroy = _epg_broadcast_destroy;
-    skel->update  = _epg_broadcast_updated;
+    skel->type = EPG_BROADCAST;
+    skel->ops  = &_epg_broadcast_ops;
   }
   return &skel;
 }
@@ -2188,6 +2329,10 @@ epg_broadcast_t *epg_broadcast_deserialize
 // FULL(ish) list from EN 300 468, I've excluded the last category
 // that relates more to broadcast content than what I call a "genre"
 // these will be handled elsewhere as broadcast metadata
+
+// Reference (Sept 2016):
+// http://www.etsi.org/deliver/etsi_en/300400_300499/300468/01.11.01_60/en_300468v011101p.pdf
+
 #define C_ (const char *[])
 static const char **_epg_genre_names[16][16] = {
   { /* 00 */
@@ -2203,11 +2348,13 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Romance"), NULL },
     C_{ N_("Serious"), N_("Classical"), N_("Religious"), N_("Historical movie"), N_("Drama"), NULL },
     C_{ N_("Adult movie"), N_("Drama"), NULL },
-    C_{ N_("Adult movie"), N_("Drama"), NULL },
-    C_{ N_("Adult movie"), N_("Drama"), NULL },
-    C_{ N_("Adult movie"), N_("Drama"), NULL },
-    C_{ N_("Adult movie"), N_("Drama"), NULL },
-    C_{ N_("Adult movie"), N_("Drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
+    C_{ N_("Movie / drama"), NULL },
   },
   { /* 02 */
     C_{ N_("News"), N_("Current affairs"), NULL },
@@ -2215,31 +2362,35 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("News magazine"), NULL },
     C_{ N_("Documentary"), NULL },
     C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
-    C_{ N_("Discussion"), N_("Interview"), N_("Debate"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
+    C_{ N_("News / Current Affairs"), NULL },
   },
   { /* 03 */
     C_{ N_("Show"), N_("Game show"), NULL },
     C_{ N_("Game show"), N_("Quiz"), N_("Contest"), NULL },
     C_{ N_("Variety show"), NULL },
     C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
-    C_{ N_("Talk show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
+    C_{ N_("Show / Game show"), NULL },
   },
   { /* 04 */
     C_{ N_("Sports"), NULL },
@@ -2251,6 +2402,13 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Athletics"), NULL },
     C_{ N_("Motor sport"), NULL },
     C_{ N_("Water sport"), NULL },
+    C_{ N_("Winter sports"), NULL },
+    C_{ N_("Equestrian"), NULL },
+    C_{ N_("Martial sports"), NULL },
+    C_{ N_("Sports"), NULL },
+    C_{ N_("Sports"), NULL },
+    C_{ N_("Sports"), NULL },
+    C_{ N_("Sports"), NULL },
   },
   { /* 05 */
     C_{ N_("Children's / Youth programs"), NULL },
@@ -2259,14 +2417,16 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Entertainment programs for 10 to 16"), NULL },
     C_{ N_("Informational"), N_("Educational"), N_("School programs"), NULL },
     C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
-    C_{ N_("Cartoons"), N_("Puppets"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
+    C_{ N_("Children's / Youth Programs"), NULL },
   },
   { /* 06 */
     C_{ N_("Music"), N_("Ballet"), N_("Dance"), NULL },
@@ -2275,13 +2435,16 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Folk"), N_("Traditional music"), NULL },
     C_{ N_("Jazz"), NULL },
     C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
-    C_{ N_("Musical"), N_("Opera"), NULL },
+    C_{ N_("Ballet"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
+    C_{ N_("Music / Ballet / Dance"), NULL },
   },
   { /* 07 */
     C_{ N_("Arts"), N_("Culture (without music)"), NULL },
@@ -2293,22 +2456,31 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Film"), N_("Cinema"), NULL },
     C_{ N_("Experimental film"), N_("Video"), NULL },
     C_{ N_("Broadcasting"), N_("Press"), NULL },
+    C_{ N_("New media"), NULL },
+    C_{ N_("Arts magazines"), N_("Culture magazines"), NULL },
+    C_{ N_("Fashion"), NULL },
+    C_{ N_("Arts / Culture (without music)"), NULL },
+    C_{ N_("Arts / Culture (without music)"), NULL },
+    C_{ N_("Arts / Culture (without music)"), NULL },
+    C_{ N_("Arts / Culture (without music)"), NULL },
   },
   { /* 08 */
     C_{ N_("Social"), N_("Political issues"), N_("Economics"), NULL },
     C_{ N_("Magazines"), N_("Reports"), N_("Documentary"), NULL },
     C_{ N_("Economics"), N_("Social advisory"), NULL },
     C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
-    C_{ N_("Remarkable people"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
+    C_{ N_("Social / Political issues / Economics"), NULL },
   },
   { /* 09 */
     C_{ N_("Education"), N_("Science"), N_("Factual topics"), NULL },
@@ -2319,12 +2491,14 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Social"), N_("Spiritual sciences"), NULL },
     C_{ N_("Further education"), NULL },
     C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
-    C_{ N_("Languages"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
+    C_{ N_("Education / Science / Factual topics"), NULL },
   },
   { /* 10 */
     C_{ N_("Leisure hobbies"), NULL },
@@ -2335,12 +2509,14 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Cooking"), NULL },
     C_{ N_("Advertisement / Shopping"), NULL },
     C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
-    C_{ N_("Gardening"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
+    C_{ N_("Leisure hobbies"), NULL },
   }
 };
 
@@ -2540,12 +2716,13 @@ _eq_comp_num ( epg_filter_num_t *f, int64_t val )
 static inline int
 _eq_comp_str ( epg_filter_str_t *f, const char *str )
 {
+  if (!str) return 0;
   switch (f->comp) {
     case EC_EQ: return strcmp(str, f->str);
     case EC_LT: return strcmp(str, f->str) > 0;
     case EC_GT: return strcmp(str, f->str) < 0;
     case EC_IN: return strstr(str, f->str) != NULL;
-    case EC_RE: return regexec(&f->re, str, 0, NULL, 0) != 0;
+    case EC_RE: return regex_match(&f->re, str) != 0;
     default: return 0;
   }
 }
@@ -2574,7 +2751,7 @@ _eq_add ( epg_query_t *eq, epg_broadcast_t *e )
   if (eq->channel_num.comp != EC_NO)
     if (_eq_comp_num(&eq->channel_num, channel_get_number(e->channel))) return;
   if (eq->channel_name.comp != EC_NO)
-    if (_eq_comp_str(&eq->channel_name, channel_get_name(e->channel))) return;
+    if (_eq_comp_str(&eq->channel_name, channel_get_name(e->channel, NULL))) return;
   if (eq->genre_count) {
     epg_genre_t genre;
     uint32_t i, r = 0;
@@ -2587,13 +2764,13 @@ _eq_add ( epg_query_t *eq, epg_broadcast_t *e )
   }
   if (fulltext) {
     if ((s = epg_episode_get_title(ep, lang)) == NULL ||
-        regexec(&eq->stitle_re, s, 0, NULL, 0)) {
+        regex_match(&eq->stitle_re, s)) {
       if ((s = epg_episode_get_subtitle(ep, lang)) == NULL ||
-          regexec(&eq->stitle_re, s, 0, NULL, 0)) {
+          regex_match(&eq->stitle_re, s)) {
         if ((s = epg_broadcast_get_summary(e, lang)) == NULL ||
-            regexec(&eq->stitle_re, s, 0, NULL, 0)) {
+            regex_match(&eq->stitle_re, s)) {
           if ((s = epg_broadcast_get_description(e, lang)) == NULL ||
-              regexec(&eq->stitle_re, s, 0, NULL, 0)) {
+              regex_match(&eq->stitle_re, s)) {
             return;
           }
         }
@@ -2602,7 +2779,7 @@ _eq_add ( epg_query_t *eq, epg_broadcast_t *e )
   }
   if (eq->title.comp != EC_NO || (eq->stitle && !fulltext)) {
     if ((s = epg_episode_get_title(ep, lang)) == NULL) return;
-    if (eq->stitle && !fulltext && regexec(&eq->stitle_re, s, 0, NULL, 0)) return;
+    if (eq->stitle && !fulltext && regex_match(&eq->stitle_re, s)) return;
     if (eq->title.comp != EC_NO && _eq_comp_str(&eq->title, s)) return;
   }
   if (eq->subtitle.comp != EC_NO) {
@@ -2642,14 +2819,14 @@ static int
 _eq_init_str( epg_filter_str_t *f )
 {
   if (f->comp != EC_RE) return 0;
-  return regcomp(&f->re, f->str, REG_ICASE | REG_EXTENDED | REG_NOSUB);
+  return regex_compile(&f->re, f->str, LS_EPG);
 }
 
 static void
 _eq_done_str( epg_filter_str_t *f )
 {
   if (f->comp == EC_RE)
-    regfree(&f->re);
+    regex_free(&f->re);
   free(f->str);
   f->str = NULL;
 }
@@ -2696,7 +2873,16 @@ static int _epg_sort_title_ascending ( const void *a, const void *b, void *eq )
   if (s1 == NULL && s2 == NULL) return 0;
   if (s1 == NULL && s2) return 1;
   if (s1 && s2 == NULL) return -1;
-  return strcmp(s1, s2);
+  int r = strcmp(s1, s2);
+  if (r == 0) {
+    s1 = epg_broadcast_get_subtitle(*(epg_broadcast_t**)a, ((epg_query_t *)eq)->lang);
+    s2 = epg_broadcast_get_subtitle(*(epg_broadcast_t**)b, ((epg_query_t *)eq)->lang);
+    if (s1 == NULL && s2 == NULL) return 0;
+    if (s1 == NULL && s2) return 1;
+    if (s1 && s2 == NULL) return -1;
+    r = strcmp(s1, s2);
+  }
+  return r;
 }
 
 static int _epg_sort_title_descending ( const void *a, const void *b, void *eq )
@@ -2751,10 +2937,9 @@ static int _epg_sort_description_descending ( const void *a, const void *b, void
 
 static int _epg_sort_channel_ascending ( const void *a, const void *b, void *eq )
 {
-  char *s1 = strdup(channel_get_name((*(epg_broadcast_t**)a)->channel));
-  char *s2 = strdup(channel_get_name((*(epg_broadcast_t**)b)->channel));
+  char *s1 = strdup(channel_get_name((*(epg_broadcast_t**)a)->channel, ""));
+  const char *s2 =  channel_get_name((*(epg_broadcast_t**)b)->channel, "");
   int r = strcmp(s1, s2);
-  free(s2);
   free(s1);
   return r;
 }
@@ -2838,7 +3023,7 @@ epg_query ( epg_query_t *eq, access_t *perm )
   if (_eq_init_str(&eq->channel_name)) goto fin;
 
   if (eq->stitle)
-    if (regcomp(&eq->stitle_re, eq->stitle, REG_ICASE | REG_EXTENDED | REG_NOSUB))
+    if (regex_compile(&eq->stitle_re, eq->stitle, LS_EPG))
       goto fin;
 
   channel = channel_find_by_uuid(eq->channel) ?:
@@ -2915,7 +3100,7 @@ fin:
   _eq_done_str(&eq->channel_name);
 
   if (eq->stitle)
-    regfree(&eq->stitle_re);
+    regex_free(&eq->stitle_re);
 
   free(eq->lang); eq->lang = NULL;
   free(eq->channel); eq->channel = NULL;

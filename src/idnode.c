@@ -108,7 +108,7 @@ idnode_insert(idnode_t *in, const char *uuid, const idclass_t *class, int flags)
       in->in_class = NULL;
       return -1;
     }
-    uuid_copy(&in->in_uuid, &u);
+    uuid_duplicate(&in->in_uuid, &u);
 
     c = NULL;
     if (flags & IDNODE_SHORT_UUID) {
@@ -139,7 +139,7 @@ idnode_insert(idnode_t *in, const char *uuid, const idclass_t *class, int flags)
   /* Register the class */
   in->in_domain = idclass_find_domain(class);
   if (in->in_domain == NULL) {
-    tvherror(LS_IDNODE, "classs '%s' is not registered", class->ic_class);
+    tvherror(LS_IDNODE, "class '%s' is not registered", class->ic_class);
     abort();
   }
   c = RB_INSERT_SORTED(in->in_domain, in, in_domain_link, in_cmp);
@@ -1202,6 +1202,7 @@ void
 idnode_changed( idnode_t *self )
 {
   idnode_notify_changed(self);
+  idnode_changedfn(self);
   idnode_save_queue(self);
 }
 
@@ -1513,9 +1514,7 @@ idnode_slist_enum ( idnode_t *in, idnode_slist_t *options, const char *lang )
   htsmsg_t *l = htsmsg_create_list(), *m;
 
   for (; options->id; options++) {
-    m = htsmsg_create_map();
-    htsmsg_add_str(m, "key", options->id);
-    htsmsg_add_str(m, "val", tvh_gettext_lang(lang, options->name));
+    m = htsmsg_create_key_val(options->id, tvh_gettext_lang(lang, options->name));
     htsmsg_add_msg(l, NULL, m);
   }
   return l;
@@ -1547,7 +1546,7 @@ idnode_slist_set ( idnode_t *in, idnode_slist_t *options, const htsmsg_t *vals )
     ip = (void *)in + o->off;
     if (!changed) {
       HTSMSG_FOREACH(f, vals) {
-        if ((s = htsmsg_field_get_str(f)) != NULL)
+        if ((s = htsmsg_field_get_str(f)) == NULL)
           continue;
         if (strcmp(s, o->id))
           continue;
@@ -1887,7 +1886,7 @@ save_thread ( void *aux )
   htsmsg_t *m;
   char filename[PATH_MAX];
 
-  tvhtread_renice(15);
+  tvhthread_renice(15);
 
   pthread_mutex_lock(&global_lock);
 

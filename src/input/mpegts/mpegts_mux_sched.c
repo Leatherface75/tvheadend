@@ -25,7 +25,6 @@
 #include "profile.h"
 
 static void mpegts_mux_sched_timer ( void *p );
-static void mpegts_mux_sched_input ( void *p, streaming_message_t *sm );
 
 mpegts_mux_sched_list_t mpegts_mux_sched_all;
 
@@ -36,7 +35,7 @@ mpegts_mux_sched_list_t mpegts_mux_sched_all;
 static void
 mpegts_mux_sched_set_timer ( mpegts_mux_sched_t *mms )
 {
-  /* Upate timer */
+  /* Update timer */
   if (!mms->mms_enabled) {
     if (mms->mms_sub)
       subscription_unsubscribe(mms->mms_sub, UNSUBSCRIBE_FINAL);
@@ -51,9 +50,9 @@ mpegts_mux_sched_set_timer ( mpegts_mux_sched_t *mms )
                      mms->mms_timeout);
     }
   } else {
-    time_t now, nxt;
-    time(&now);
-    if (!cron_next(&mms->mms_cronjob, now, &nxt)) {
+    time_t nxt;
+    if (!cron_next(&mms->mms_cronjob, gclk(), &nxt)) {
+      mms->mms_start = nxt;
       gtimer_arm_absn(&mms->mms_timer, mpegts_mux_sched_timer, mms, nxt);
     }
   }
@@ -152,7 +151,7 @@ const idclass_t mpegts_mux_sched_class =
       .type     = PT_STR,
       .id       = "cron",
       .name     = N_("Cron"),
-      .desc     = N_("Schedule frequency (in Cron format)."),
+      .desc     = N_("Schedule frequency (in cron format)."),
       .doc      = prop_doc_cron,
       .off      = offsetof(mpegts_mux_sched_t, mms_cronstr),
       .set      = mpegts_mux_sched_class_cron_set,
@@ -160,10 +159,17 @@ const idclass_t mpegts_mux_sched_class =
     {
       .type     = PT_INT,
       .id       = "timeout",
-      .name     = N_("Timout (secs)"),
+      .name     = N_("Timeout (secs)"),
       .desc     = N_("The length of time (in seconds) to play the mux "
-                     "for. 1 hour = 3600."),
+                     "(1 hour = 3600)."),
       .off      = offsetof(mpegts_mux_sched_t, mms_timeout),
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "restart",
+      .name     = N_("Restart"),
+      .desc     = N_("Restart when the subscription is overriden (in then timeout time window)."),
+      .off      = offsetof(mpegts_mux_sched_t, mms_restart),
     },
     {
     },
@@ -190,6 +196,18 @@ mpegts_mux_sched_input ( void *p, streaming_message_t *sm )
   streaming_msg_free(sm);
 }
 
+static htsmsg_t *
+mpegts_mux_sched_input_info ( void *p, htsmsg_t *list )
+{
+  htsmsg_add_str(list, NULL, "mux sched input");
+  return list;
+}
+
+static streaming_ops_t mpegts_mux_sched_input_ops = {
+  .st_cb   = mpegts_mux_sched_input,
+  .st_info = mpegts_mux_sched_input_info
+};
+
 /******************************************************************************
  * Timer
  *****************************************************************************/
@@ -199,7 +217,7 @@ mpegts_mux_sched_timer ( void *p )
 {
   mpegts_mux_t *mm;
   mpegts_mux_sched_t *mms = p;
-  time_t now, nxt;
+  time_t nxt;
 
   /* Not enabled (shouldn't be running) */
   if (!mms->mms_enabled)
@@ -215,9 +233,6 @@ mpegts_mux_sched_timer ( void *p )
     mpegts_mux_sched_delete(mms, 1);
     return;
   }
-
-  /* Current time */
-  time(&now);
 
   /* Start sub */
   if (!mms->mms_active) {
@@ -255,13 +270,21 @@ mpegts_mux_sched_timer ( void *p )
     }
     mms->mms_active = 0;
 
+    if (mms->mms_restart &&
+        (mms->mms_timeout <= 0 ||
+         mms->mms_start + mms->mms_timeout < gclk() - 60)) {
+      gtimer_arm_rel(&mms->mms_timer, mpegts_mux_sched_timer, mms, 15);
+      return;
+    }
+
     /* Find next */
-    if (cron_next(&mms->mms_cronjob, now, &nxt)) {
+    if (cron_next(&mms->mms_cronjob, gclk(), &nxt)) {
       tvherror(LS_MUXSCHED, "failed to find next event");
       return;
     }
 
     /* Timer */
+    mms->mms_start = nxt;
     gtimer_arm_absn(&mms->mms_timer, mpegts_mux_sched_timer, mms, nxt);
   }
 }
@@ -293,7 +316,7 @@ mpegts_mux_sched_create ( const char *uuid, htsmsg_t *conf )
   LIST_INSERT_HEAD(&mpegts_mux_sched_all, mms, mms_link);
 
   /* Initialise */
-  streaming_target_init(&mms->mms_input, mpegts_mux_sched_input, mms, 0);
+  streaming_target_init(&mms->mms_input, &mpegts_mux_sched_input_ops, mms, 0);
 
   /* Load conf */
   if (conf)

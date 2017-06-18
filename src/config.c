@@ -36,17 +36,8 @@
 #include "input/mpegts/scanfile.h"
 
 #include <netinet/ip.h>
-
-#ifndef IPTOS_CLASS_CS0
-#define IPTOS_CLASS_CS0                 0x00
-#define IPTOS_CLASS_CS1                 0x20
-#define IPTOS_CLASS_CS2                 0x40
-#define IPTOS_CLASS_CS3                 0x60
-#define IPTOS_CLASS_CS4                 0x80
-#define IPTOS_CLASS_CS5                 0xa0
-#define IPTOS_CLASS_CS6                 0xc0
-#define IPTOS_CLASS_CS7                 0xe0
-#endif
+#define COMPAT_IPTOS
+#include "compat.h"
 
 static void config_muxconfpath_notify ( void *o, const char *lang );
 
@@ -519,7 +510,9 @@ config_migrate_v3 ( void )
   if (!access(dst, R_OK | W_OK))
     return;
 
-  hts_settings_makedirs(dst);
+  if (hts_settings_makedirs(dst))
+    return;
+
   hts_settings_buildpath(src, sizeof(src), "input/linuxdvb/networks");
   rename(src, dst);
 }
@@ -1404,7 +1397,50 @@ config_migrate_v23 ( void )
   config_migrate_v23_one("pyepg");
 }
 
+static void
+config_migrate_v24_helper ( const char **list, htsmsg_t *e, const char *name )
+{
+  htsmsg_t *l = htsmsg_create_list();
+  const char **p = list;
+  if (!strcmp(name, "dvr") && !htsmsg_get_bool_or_default(e, "failed_dvr", 0))
+    htsmsg_add_str(l, NULL, "failed");
+  for (p = list; *p; p += 2)
+    if (htsmsg_get_bool_or_default(e, p[0], 0))
+      htsmsg_add_str(l, NULL, p[1]);
+  for (p = list; *p; p += 2)
+    htsmsg_delete_field(e, p[0]);
+  htsmsg_add_msg(e, name, l);
+}
 
+static void
+config_migrate_v24 ( void )
+{
+  htsmsg_t *c, *e;
+  htsmsg_field_t *f;
+  static const char *streaming_list[] = {
+    "streaming", "basic",
+    "adv_streaming", "advanced",
+    "htsp_streaming", "htsp",
+    NULL
+  };
+  static const char *dvr_list[] = {
+    "dvr", "basic",
+    "htsp_dvr", "htsp",
+    "all_dvr", "all",
+    "all_rw_dvr", "all_rw",
+    "failed_dvr", "failed",
+    NULL
+  };
+  if ((c = hts_settings_load("accesscontrol")) != NULL) {
+    HTSMSG_FOREACH(f, c) {
+      if (!(e = htsmsg_field_get_map(f))) continue;
+      config_migrate_v24_helper(streaming_list, e, "streaming");
+      config_migrate_v24_helper(dvr_list, e, "dvr");
+      hts_settings_save(e, "accesscontrol/%s", f->hmf_name);
+    }
+    htsmsg_destroy(c);
+  }
+}
 
 /*
  * Perform backup
@@ -1526,7 +1562,8 @@ static const config_migrate_t config_migrate_table[] = {
   config_migrate_v20,
   config_migrate_v21,
   config_migrate_v22,
-  config_migrate_v23
+  config_migrate_v23,
+  config_migrate_v24
 };
 
 /*
@@ -1632,12 +1669,15 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   config.idnode.in_class = &config_class;
   config.ui_quicktips = 1;
   config.digest = 1;
+  config.proxy = 0;
   config.realm = strdup("tvheadend");
   config.info_area = strdup("login,storage,time");
   config.cookie_expires = 7;
   config.dscp = -1;
   config.descrambler_buffer = 9000;
   config.epg_compress = 1;
+  config.epg_cut_window = 5*60;
+  config.epg_update_window = 24*3600;
   config_scanfile_ok = 0;
   config.theme_ui = strdup("blue");
 
@@ -1712,6 +1752,10 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   htsmsg_destroy(config2);
   if (config.server_name == NULL || config.server_name[0] == '\0')
     config.server_name = strdup("Tvheadend");
+  if (config.realm == NULL || config.realm[0] == '\0')
+    config.realm = strdup("tvheadend");
+  if (config.http_server_name == NULL || config.http_server_name[0] == '\0')
+    config.http_server_name = strdup("HTS/tvheadend");
   if (!config_scanfile_ok)
     config_muxconfpath_notify(&config.idnode, NULL);
 }
@@ -1734,6 +1778,8 @@ config_init ( int backup )
     config.version = ARRAY_SIZE(config_migrate_table);
     tvh_str_set(&config.full_version, tvheadend_version);
     tvh_str_set(&config.server_name, "Tvheadend");
+    tvh_str_set(&config.realm, "tvheadend");
+    tvh_str_set(&config.http_server_name, "HTS/tvheadend");
     idnode_changed(&config.idnode);
   
   /* Perform migrations */
@@ -1749,6 +1795,7 @@ void config_done ( void )
   /* note: tvhlog is inactive !!! */
   free(config.wizard);
   free(config.full_version);
+  free(config.http_server_name);
   free(config.server_name);
   free(config.language);
   free(config.language_ui);
@@ -1865,9 +1912,7 @@ static void
 config_class_info_area_list1 ( htsmsg_t *m, const char *key,
                                const char *val, const char *lang )
 {
-  htsmsg_t *e = htsmsg_create_map();
-  htsmsg_add_str(e, "key", key);
-  htsmsg_add_str(e, "val", tvh_gettext_lang(lang, val));
+  htsmsg_t *e = htsmsg_create_key_val(key, tvh_gettext_lang(lang, val));
   htsmsg_add_msg(m, NULL, e);
 }
 
@@ -2042,6 +2087,32 @@ const idclass_t config_class = {
       .group  = 1
     },
     {
+      .type   = PT_STR,
+      .id     = "http_server_name",
+      .name   = N_("HTTP server name"),
+      .desc   = N_("The server name for 'Server:' HTTP headers."),
+      .off    = offsetof(config_t, http_server_name),
+      .opts   = PO_HIDDEN | PO_EXPERT,
+      .group  = 1
+    },
+    {
+      .type   = PT_STR,
+      .id     = "http_realm_name",
+      .name   = N_("HTTP realm name"),
+      .desc   = N_("The realm name for the HTTP authorization."),
+      .off    = offsetof(config_t, realm),
+      .opts   = PO_HIDDEN | PO_EXPERT,
+      .group  = 1
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "hbbtv",
+      .name   = N_("Parse HbbTV info"),
+      .desc   = N_("Parse HbbTV information from the services."),
+      .off    = offsetof(config_t, hbbtv),
+      .group  = 1
+    },
+    {
       .type   = PT_INT,
       .id     = "uilevel",
       .name   = N_("User interface level"),
@@ -2081,7 +2152,21 @@ const idclass_t config_class = {
                    "It is intended to replace unencrypted HTTP basic access authentication. "
                    "This option should be enabled for standard usage."),
       .off    = offsetof(config_t, digest),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
+      .group  = 1
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "proxy",
+      .name   = N_("Use PROXY protocol & X-Forwarded-For"),
+      .desc   = N_("PROXY protocol is an extension for support incoming "
+                   "TCP connections from a remote server (like a firewall) "
+                   "sending the original IP address of the client. "
+                   "The HTTP header 'X-Forwarded-For' do the same with "
+                   "HTTP connections. Both enable tunneled connections."
+                   "This option should be disabled for standard usage."),
+      .off    = offsetof(config_t, proxy),
+      .opts   = PO_EXPERT,
       .group  = 1
     },
     {
@@ -2092,7 +2177,7 @@ const idclass_t config_class = {
       .desc   = N_("The number of days cookies set by Tvheadend should "
                    "expire."),
       .off    = offsetof(config_t, cookie_expires),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
       .group  = 1
     },
     {
@@ -2133,6 +2218,7 @@ const idclass_t config_class = {
                    "for the advanced level. By default, this tab is visible only "
                    "in the expert level."),
       .off    = offsetof(config_t, caclient_ui),
+      .opts   = PO_ADVANCED,
       .group  = 1
     },
     {
@@ -2181,9 +2267,28 @@ const idclass_t config_class = {
       .off    = offsetof(config_t, epg_compress),
       .opts   = PO_EXPERT,
       .def.i  = 1,
-      .group  = 1
+      .group  = 2
     },
 #endif
+    {
+      .type   = PT_U32,
+      .id     = "epg_cutwindow",
+      .name   = N_("EPG overlap cut"),
+      .desc   = N_("The time window to cut the stop time from the overlapped event in seconds."),
+      .off    = offsetof(config_t, epg_cut_window),
+      .opts   = PO_EXPERT,
+      .group  = 2
+    },
+    {
+      .type   = PT_U32,
+      .id     = "epg_window",
+      .name   = N_("EPG update window"),
+      .desc   = N_("Maximum allowed difference between event start time when "
+                   "the EPG event is changed in seconds."),
+      .off    = offsetof(config_t, epg_update_window),
+      .opts   = PO_EXPERT,
+      .group  = 2
+    },
     {
       .type   = PT_STR,
       .islist = 1,
@@ -2294,7 +2399,7 @@ const idclass_t config_class = {
       .type   = PT_INT,
       .id     = "chiconscheme",
       .name   = N_("Channel icon name scheme"),
-      .desc   = N_("Scheme to generate the the channel icon names "
+      .desc   = N_("Scheme to generate the channel icon names "
                    "(all lower-case, service name picons etc.)."),
       .list   = config_class_chiconscheme_list,
       .doc    = prop_doc_config_channelname_scheme,
@@ -2343,7 +2448,7 @@ const idclass_t config_class = {
 
 const char *config_get_server_name ( void )
 {
-  return config.server_name;
+  return config.server_name ?: "Tvheadend";
 }
 
 const char *config_get_language ( void )

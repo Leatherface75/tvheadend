@@ -41,6 +41,8 @@
 #include "notify.h"
 #include "access.h"
 #include "dvr/dvr.h"
+#define COMPAT_IPTOS
+#include "compat.h"
 
 #if ENABLE_LIBSYSTEMD_DAEMON
 #include <systemd/sd-daemon.h>
@@ -230,7 +232,7 @@ static int
 tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
 {
   htsbuf_data_t *hd = TAILQ_LAST(&hq->hq_q, htsbuf_data_queue);
-  int c;
+  int c, r;
 
   if(hd != NULL) {
     /* Fill out any previous buffer */
@@ -238,12 +240,14 @@ tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
 
     if(c > 0) {
 
-      c = read(fd, hd->hd_data + hd->hd_data_len, c);
-      if(c < 1)
+      do {
+        r = read(fd, hd->hd_data + hd->hd_data_len, c);
+      } while (r < 0 && ERRNO_AGAIN(errno));
+      if(r < 1)
 	return -1;
 
-      hd->hd_data_len += c;
-      hq->hq_size += c;
+      hd->hd_data_len += r;
+      hq->hq_size += r;
       return 0;
     }
   }
@@ -253,16 +257,18 @@ tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
   hd->hd_data_size = 1000;
   hd->hd_data = malloc(hd->hd_data_size);
 
-  c = read(fd, hd->hd_data, hd->hd_data_size);
-  if(c < 1) {
+  do {
+    r = read(fd, hd->hd_data, hd->hd_data_size);
+  } while (r < 0 && ERRNO_AGAIN(errno));
+  if(r < 1) {
     free(hd->hd_data);
     free(hd);
     return -1;
   }
-  hd->hd_data_len = c;
+  hd->hd_data_len = r;
   hd->hd_data_off = 0;
   TAILQ_INSERT_TAIL(&hq->hq_q, hd, hd_link);
-  hq->hq_size += c;
+  hq->hq_size += r;
   return 0;
 }
 
@@ -398,12 +404,12 @@ tcp_socket_dead(int fd)
  *
  */
 char *
-tcp_get_str_from_ip(const struct sockaddr *sa, char *dst, size_t maxlen)
+tcp_get_str_from_ip(const struct sockaddr_storage *sa, char *dst, size_t maxlen)
 {
   if (sa == NULL || dst == NULL)
     return NULL;
 
-  switch(sa->sa_family)
+  switch(sa->ss_family)
   {
     case AF_INET:
       inet_ntop(AF_INET, &(((struct sockaddr_in*)sa)->sin_addr), dst, maxlen);
@@ -422,18 +428,18 @@ tcp_get_str_from_ip(const struct sockaddr *sa, char *dst, size_t maxlen)
 /**
  *
  */
-struct sockaddr *
-tcp_get_ip_from_str(const char *src, struct sockaddr *sa)
+struct sockaddr_storage *
+tcp_get_ip_from_str(const char *src, struct sockaddr_storage *sa)
 {
   if (sa == NULL || src == NULL)
     return NULL;
 
   if (strstr(src, ":")) {
-    sa->sa_family = AF_INET6;
+    sa->ss_family = AF_INET6;
     if (inet_pton(AF_INET6, src, &(((struct sockaddr_in6*)sa)->sin6_addr)) != 1)
       return NULL;
   } else if (strstr(src, ".")) {
-    sa->sa_family = AF_INET;
+    sa->ss_family = AF_INET;
     if (inet_pton(AF_INET, src, &(((struct sockaddr_in*)sa)->sin_addr)) != 1)
       return NULL;
   } else {
@@ -816,7 +822,7 @@ void *tcp_server_create
     return NULL;
   }
 
-  listen(fd, 1);
+  listen(fd, 511);
 
   ts = malloc(sizeof(tcp_server_t));
   ts->serverfd = fd;
@@ -824,7 +830,7 @@ void *tcp_server_create
   ts->ops    = *ops;
   ts->opaque = opaque;
 
-  tcp_get_str_from_ip((const struct sockaddr *)&bound, buf, sizeof(buf));
+  tcp_get_str_from_ip(&bound, buf, sizeof(buf));
   tvhinfo(subsystem, "Starting %s server %s:%d", name, buf, htons(IP_PORT(bound)));
 
   return ts;
@@ -890,7 +896,7 @@ tcp_server_create
     ts->bound  = bound;
     ts->ops    = *ops;
     ts->opaque = opaque;
-    tcp_get_str_from_ip((const struct sockaddr *)&bound, buf, sizeof(buf));
+    tcp_get_str_from_ip(&bound, buf, sizeof(buf));
     tvhinfo(subsystem, "Starting %s server %s:%d (systemd)", name, buf, htons(IP_PORT(bound)));
   } else {
     /* no systemd-managed socket found, create a new one */
@@ -1068,9 +1074,13 @@ tcp_server_connections ( void )
     if (!tsl->status) continue;
     c++;
     e = htsmsg_create_map();
-    tcp_get_str_from_ip((struct sockaddr*)&tsl->peer, buf, sizeof(buf));
     htsmsg_add_u32(e, "id", tsl->id);
+    tcp_get_str_from_ip(&tsl->self, buf, sizeof(buf));
+    htsmsg_add_str(e, "server", buf);
+    htsmsg_add_u32(e, "server_port", ntohs(IP_PORT(tsl->self)));
+    tcp_get_str_from_ip(&tsl->peer, buf, sizeof(buf));
     htsmsg_add_str(e, "peer", buf);
+    htsmsg_add_u32(e, "peer_port", ntohs(IP_PORT(tsl->peer)));
     htsmsg_add_s64(e, "started", tsl->started);
     tsl->status(tsl->opaque, e);
     htsmsg_add_msg(l, NULL, e);

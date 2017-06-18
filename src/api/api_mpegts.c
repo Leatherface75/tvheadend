@@ -54,12 +54,9 @@ api_mpegts_input_network_list
   if ((is = mi->mi_network_list(mi))) {
     for (i = 0; i < is->is_count; i++) {
       char buf[256];
-      htsmsg_t *e = htsmsg_create_map();
       mn = (mpegts_network_t*)is->is_array[i];
-      htsmsg_add_str(e, "key", idnode_uuid_as_str(is->is_array[i], ubuf));
       mn->mn_display_name(mn, buf, sizeof(buf));
-      htsmsg_add_str(e, "val", buf);
-      htsmsg_add_msg(l, NULL, e);
+      htsmsg_add_msg(l, NULL, htsmsg_create_key_val(idnode_uuid_as_str(&mn->mn_id, ubuf), buf));
     }
     idnode_set_free(is);
   }
@@ -125,8 +122,7 @@ api_mpegts_network_create
   mn = mpegts_network_build(class, conf);
   if (mn) {
     err = 0;
-    *resp = htsmsg_create_map();
-    idnode_changed(&mn->mn_id);
+    api_idnode_create(resp, &mn->mn_id);
   } else {
     err = EINVAL;
   }
@@ -221,7 +217,7 @@ api_mpegts_network_muxcreate
   if (!(mm = mn->mn_mux_create2(mn, conf)))
     goto exit;
 
-  idnode_changed(&mm->mm_id);
+  api_idnode_create(resp, &mm->mm_id);
   err = 0;
 
 exit:
@@ -280,6 +276,7 @@ api_mpegts_service_grid
     LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
       if (hide && !mm->mm_is_enabled(mm)) continue;
       LIST_FOREACH(ms, &mm->mm_services, s_dvb_mux_link) {
+        if (hide && !ms->s_verified) continue;
         if (hide == 2 && !ms->s_is_enabled((service_t*)ms, 0)) continue;
         idnode_set_add(ins, (idnode_t*)ms, &conf->filter, perm->aa_lang_ui);
       }
@@ -314,8 +311,7 @@ api_mpegts_mux_sched_create
   mms = mpegts_mux_sched_create(NULL, conf);
   if (mms) {
     err = 0;
-    *resp = htsmsg_create_map();
-    idnode_changed(&mms->mms_id);
+    api_idnode_create(resp, &mms->mms_id);
   } else {
     err = EINVAL;
   }

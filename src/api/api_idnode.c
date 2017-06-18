@@ -143,10 +143,10 @@ api_idnode_grid
   list  = htsmsg_create_list();
   for (i = conf.start; i < ins.is_count && conf.limit != 0; i++) {
     in = ins.is_array[i];
-    e = htsmsg_create_map();
-    htsmsg_add_str(e, "uuid", idnode_uuid_as_str(in, ubuf));
     if (idnode_perm(in, perm, NULL))
       continue;
+    e = htsmsg_create_map();
+    htsmsg_add_str(e, "uuid", idnode_uuid_as_str(in, ubuf));
     idnode_read0(in, e, flist, 0, conf.sort.lang);
     idnode_perm_unset(in);
     htsmsg_add_msg(list, NULL, e);
@@ -196,9 +196,8 @@ api_idnode_load_by_class0
 
       /* Name/UUID only */
       if (_enum) {
-        e = htsmsg_create_map();
-        htsmsg_add_str(e, "key", idnode_uuid_as_str(in, ubuf));
-        htsmsg_add_str(e, "val", idnode_get_title(in, perm->aa_lang_ui));
+        e = htsmsg_create_key_val(idnode_uuid_as_str(in, ubuf),
+                                  idnode_get_title(in, perm->aa_lang_ui));
 
       /* Full record */
       } else {
@@ -671,7 +670,8 @@ api_idnode_handler
         err = EPERM;
       } else {
         handler(perm, in);
-        idnode_perm_unset(in);
+        if (!destroyed)
+          idnode_perm_unset(in);
       }
       htsmsg_destroy(msg);
     }
@@ -719,6 +719,29 @@ api_idnode_movedown
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
   return api_idnode_handler(perm, args, resp, api_idnode_movedown_, "movedown", 0);
+}
+
+void
+api_idnode_create( htsmsg_t **resp, idnode_t *in )
+{
+  char ubuf[UUID_HEX_SIZE];
+
+  idnode_changed(in);
+  if (*resp == NULL)
+    *resp = htsmsg_create_map();
+  htsmsg_add_str(*resp, "uuid", idnode_uuid_as_str(in, ubuf));
+}
+
+void
+api_idnode_create_list( htsmsg_t **resp, htsmsg_t *list )
+{
+  if (list == NULL) {
+    htsmsg_destroy(list);
+    return;
+  }
+  if (*resp == NULL)
+    *resp = htsmsg_create_map();
+  htsmsg_add_msg(*resp, "uuid", list);
 }
 
 void api_idnode_init ( void )

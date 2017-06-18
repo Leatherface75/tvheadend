@@ -23,6 +23,7 @@
 #include "idnode.h"
 #include "profile.h"
 #include "descrambler.h"
+#include "input/mpegts/dvb.h"
 
 extern const idclass_t service_class;
 extern const idclass_t service_raw_class;
@@ -70,6 +71,7 @@ typedef struct elementary_stream {
 
   char es_lang[4];           /* ISO 639 2B 3-letter language code */
   uint8_t es_audio_type;     /* Audio type */
+  uint8_t es_audio_version;  /* Audio version/layer */
 
   uint16_t es_composition_id;
   uint16_t es_ancillary_id;
@@ -83,6 +85,10 @@ typedef struct elementary_stream {
   int8_t es_cc;             /* Last CC */
 
   int es_peak_presentation_delay; /* Max seen diff. of DTS and PTS */
+
+  /* PCR clocks */
+  int64_t  es_last_pcr;
+  int64_t  es_last_pcr_dts;
 
   /* For service stream packet reassembly */
 
@@ -126,6 +132,7 @@ typedef struct elementary_stream {
 
   tvhlog_limit_t es_cc_log;
   tvhlog_limit_t es_pes_log;
+  tvhlog_limit_t es_pcr_log;
   
   char *es_nicename;
 
@@ -137,6 +144,9 @@ typedef struct elementary_stream {
 
   /* Filter temporary variable */
   uint32_t es_filter;
+
+  /* HBBTV PSI table (AIT) */
+  mpegts_psi_table_t es_psi;
 
 } elementary_stream_t;
 
@@ -206,6 +216,8 @@ typedef struct service_lcn {
 #define SERVICE_AUTO_NORMAL       0
 #define SERVICE_AUTO_OFF          1
 #define SERVICE_AUTO_PAT_MISSING  2
+
+#define SERVICE_PMT_AUTO	  0xffff
 
 /**
  *
@@ -300,9 +312,12 @@ typedef struct service {
    * subscription scheduling.
    */
   int s_enabled;
+  int s_verified;  // In PMT and valid streams
   int s_auto;
   int s_prio;
   int s_type_user;
+  int s_pts_shift; // in ms (may be negative)
+  int s_pcr_boundary;
 
   LIST_ENTRY(service) s_active_link;
 
@@ -332,6 +347,8 @@ typedef struct service {
   int (*s_satip_source)(struct service *t);
 
   void (*s_memoryinfo)(struct service *t, int64_t *size);
+
+  int (*s_unseen)(struct service *t, const char *type, time_t before);
 
   /**
    * Channel info
@@ -422,6 +439,7 @@ typedef struct service {
 #define TSS_MUX_PACKETS      0x4
 #define TSS_PACKETS          0x8
 #define TSS_NO_ACCESS        0x10
+#define TSS_CA_CHECK         0x20
 
 
   // Errors
@@ -438,6 +456,7 @@ typedef struct service {
    */
   int s_streaming_live;
   int s_running;
+  int s_pending_restart;
 
   // Live status
 #define TSS_LIVE             0x01
@@ -455,6 +474,7 @@ typedef struct service {
    * Descrambling support
    */
 
+  uint16_t s_dvb_forcecaid;
   struct th_descrambler_list s_descramblers;
   uint8_t s_scrambled_seen;
   uint8_t s_scrambled_pass;
@@ -467,7 +487,7 @@ typedef struct service {
    */
   struct elementary_stream_queue s_components;
   struct elementary_stream_queue s_filt_components;
-  int s_last_pid;
+  short s_last_pid;
   elementary_stream_t *s_last_es;
 
   /**
@@ -477,12 +497,19 @@ typedef struct service {
 
   tvhlog_limit_t s_tei_log;
 
-  int64_t s_current_pts;
+  int64_t s_current_pcr;
+  int64_t s_candidate_pcr;
+  uint8_t s_current_pcr_guess;
 
   /*
    * Local channel numbers per bouquet
    */
   LIST_HEAD(,service_lcn) s_lcns;
+
+  /*
+   * HBBTV
+   */
+  htsmsg_t *s_hbbtv;
 
 } service_t;
 
@@ -533,6 +560,9 @@ service_stream_find(service_t *t, int pid)
     return t->s_last_es;
 }
 
+elementary_stream_t *
+service_stream_type_find(service_t *t, streaming_component_type_t type);
+
 elementary_stream_t *service_stream_create(service_t *t, int pid,
 				     streaming_component_type_t type);
 
@@ -541,6 +571,7 @@ void service_settings_write(service_t *t);
 const char *service_servicetype_txt(service_t *t);
 
 int service_has_audio_or_video(service_t *t);
+int service_has_no_audio(service_t *t, int filtered);
 int service_is_sdtv(service_t *t);
 int service_is_uhdtv(service_t *t);
 int service_is_hdtv(service_t *t);
@@ -618,6 +649,8 @@ htsmsg_t *servicetype_list (void);
 void service_load ( service_t *s, htsmsg_t *c );
 
 void service_save ( service_t *s, htsmsg_t *c );
+
+void service_remove_unseen(const char *type, int days);
 
 void sort_elementary_streams(service_t *t);
 

@@ -78,6 +78,20 @@
     background-image: url(../icons/tv_cards.png);
 }
 
+.x-tree-node-on a::before {
+    content: " \25cf";
+    color: lightgreen;
+}
+
+.x-tree-node-on a {
+    font-weight: bold;
+}
+
+.x-tree-node-off a::before {
+    content: " \25cf";
+    color: lightcoral;
+}
+
 .ux-mselect {
     overflow: auto;
     background: white;
@@ -652,12 +666,14 @@
     font-weight: bold;
     text-align: center;
     border-bottom: 1px solid #000000;
+    white-space: pre-wrap;
 }
 
 .x-epg-subtitle {
     margin: 5px;
     font: normal 12px arial, tahoma, helvetica, sans-serif;
     font-weight: bold;
+    white-space: pre-wrap;
 }
 
 .x-epg-prefix {
@@ -674,10 +690,12 @@
 .x-epg-summary {
     margin: 5px;
     font-weight: bold;
+    white-space: pre-wrap;
 }
 
 .x-epg-desc {
     margin: 10px;
+    white-space: pre-wrap;
 }
 
 .x-epg-left {
@@ -704,6 +722,23 @@
 
 .x-epg-meta {
     margin: 5px 5px 5px 10px;
+}
+
+.x-epg-image{
+    float: right;
+    margin-left: 5px;
+    margin-right: 5px;
+    margin-bottom: 5px;
+    width: 20%;
+}
+
+.x-epg-image:hover{
+    transform: scale(1.7,1.7);
+    transform-origin: right;
+}
+
+.x-epg-genre {
+    margin-left: 5px;
 }
 
 .tv-video-player {

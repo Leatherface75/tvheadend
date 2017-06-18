@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "config.h"
 #include "input/mpegts/iptv/iptv_private.h"
+#include "webui/webui.h"
 #include "satip/server.h"
 
 #define UPNP_MAX_AGE 1800
@@ -106,7 +107,7 @@ satip_server_http_xml(http_connection_t *hc)
 </iconList>\n\
 <presentationURL>http://%s:%d</presentationURL>\n\
 <satip:X_SATIPCAP xmlns:satip=\"urn:ses-com:satip\">%s</satip:X_SATIPCAP>\n\
-<satip:X_SATIPM3U xmlns:satip=\"urn:ses-com:satip\">/playlist/satip/channels</satip:X_SATIPM3U>\n\
+%s\
 </device>\n\
 </root>\n"
 
@@ -115,7 +116,7 @@ satip_server_http_xml(http_connection_t *hc)
   htsbuf_queue_t q;
   mpegts_network_t *mn;
   int dvbt = 0, dvbs = 0, dvbc = 0, atsc = 0;
-  int srcs = 0, delim = 0, tuners = 0, i;
+  int srcs = 0, delim = 0, tuners = 0, i, satipm3u = 0;
   struct xml_type_xtab *p;
   http_arg_list_t args;
 
@@ -186,6 +187,9 @@ satip_server_http_xml(http_connection_t *hc)
   else
     snprintf(buf2, sizeof(buf2), " %s", satip_server_conf.satip_uuid  + 26);
 
+  if (!hts_settings_buildpath(buf, sizeof(buf), "satip.m3u"))
+    satipm3u = access(buf, R_OK) == 0;
+
   snprintf(buf, sizeof(buf), MSG,
            config_get_server_name(),
            buf2, tvheadend_version,
@@ -195,7 +199,11 @@ satip_server_http_xml(http_connection_t *hc)
            http_server_ip, http_server_port,
            http_server_ip, http_server_port,
            http_server_ip, http_server_port,
-           devicelist ?: "");
+           devicelist ?: "",
+           satip_server_conf.satip_nom3u ? "" :
+             (satipm3u ?
+               "<satip:X_SATIPM3U xmlns:satip=\"urn:ses-com:satip\">/satip_server/satip.m3u</satip:X_SATIPM3U>\n" :
+               "<satip:X_SATIPM3U xmlns:satip=\"urn:ses-com:satip\">/playlist/satip/channels</satip:X_SATIPM3U>\n"));
 
   free(devicelist);
 
@@ -218,12 +226,25 @@ satip_server_http_xml(http_connection_t *hc)
 #undef MSG
 }
 
+static int
+satip_server_satip_m3u(http_connection_t *hc)
+{
+  char path[PATH_MAX];
+
+  if (hts_settings_buildpath(path, sizeof(path), "satip.m3u"))
+    return HTTP_STATUS_SERVICE;
+
+  return http_serve_file(hc, path, 0, MIME_M3U, NULL, NULL, NULL);
+}
+
 int
 satip_server_http_page(http_connection_t *hc,
                        const char *remain, void *opaque)
 {
   if (strcmp(remain, "desc.xml") == 0)
     return satip_server_http_xml(hc);
+  if (strcmp(remain, "satip.m3u") == 0)
+    return satip_server_satip_m3u(hc);
   return 0;
 }
 
@@ -365,7 +386,7 @@ CONFIGID.UPNP.ORG: 0\r\n"
     return;
 
   if (tvhtrace_enabled()) {
-    tcp_get_str_from_ip((struct sockaddr *)dst, buf, sizeof(buf));
+    tcp_get_str_from_ip(dst, buf, sizeof(buf));
     tvhtrace(LS_SATIPS, "sending discover reply to %s:%d%s%s",
              buf, ntohs(IP_PORT(*dst)), deviceid ? " device: " : "", deviceid ?: "");
   }
@@ -470,7 +491,7 @@ satips_upnp_discovery_received
     return;
 
   if (tvhtrace_enabled()) {
-    tcp_get_str_from_ip((struct sockaddr *)storage, buf2, sizeof(buf2));
+    tcp_get_str_from_ip(storage, buf2, sizeof(buf2));
     tvhtrace(LS_SATIPS, "received %s M-SEARCH from %s:%d",
              conn->multicast ? "multicast" : "unicast",
              buf2, ntohs(IP_PORT(*storage)));
@@ -482,7 +503,7 @@ satips_upnp_discovery_received
       satip_server_deviceid += 1;
       if (satip_server_deviceid >= 254)
         satip_server_deviceid = 1;
-      tcp_get_str_from_ip((struct sockaddr *)storage, buf2, sizeof(buf2));
+      tcp_get_str_from_ip(storage, buf2, sizeof(buf2));
       tvhwarn(LS_SATIPS, "received duplicate SAT>IP DeviceID %s from %s:%d, using %d",
               deviceid, buf2, ntohs(IP_PORT(*storage)), satip_server_deviceid);
       satips_upnp_send_discover_reply(storage, deviceid, 0);
@@ -527,6 +548,10 @@ static void satip_server_info(const char *prefix, int descramble, int muxcnf)
   int fe, findex;
   const char *ftype;
 
+  if (satip_server_rtsp_port <= 0) {
+    tvhinfo(LS_SATIPS, "SAT>IP Server inactive");
+    return;
+  }
   tvhinfo(LS_SATIPS, "SAT>IP Server %sinitialized", prefix);
   tvhinfo(LS_SATIPS, "  HTTP %s:%d, RTSP %s:%d",
               http_server_ip, http_server_port,
@@ -667,8 +692,17 @@ const idclass_t satip_server_class = {
       .id     = "satip_nat_ip",
       .name   = N_("External IP (NAT)"),
       .desc   = N_("Enter external IP if behind Network address "
-                   "translation (NAT)."),
+                   "translation (NAT). Asterisk (*) means accept all IP addresses."),
       .off    = offsetof(struct satip_server_conf, satip_nat_ip),
+      .opts   = PO_EXPERT,
+      .group  = 1,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "satip_nom3u",
+      .name   = N_("Disable X_SATIPM3U tag"),
+      .desc   = N_("Do not send X_SATIPM3U information in the XML description to clients."),
+      .off    = offsetof(struct satip_server_conf, satip_nom3u),
       .opts   = PO_EXPERT,
       .group  = 1,
     },
@@ -750,6 +784,9 @@ static void satip_server_init_common(const char *prefix, int announce)
   int descramble, rewrite_pmt, muxcnf;
   char *nat_ip;
 
+  if (satip_server_rtsp_port <= 0)
+    return;
+
   if (http_server_ip == NULL) {
     if (tcp_server_onall(http_server) && satip_server_bindaddr == NULL) {
       tvherror(LS_SATIPS, "use --satip_bindaddr parameter to select the local IP for SAT>IP");
@@ -759,13 +796,10 @@ static void satip_server_init_common(const char *prefix, int announce)
       tvherror(LS_SATIPS, "Unable to determine the HTTP/RTSP address");
       return;
     }
-    tcp_get_str_from_ip((const struct sockaddr *)&http, http_ip, sizeof(http_ip));
+    tcp_get_str_from_ip(&http, http_ip, sizeof(http_ip));
     http_server_ip = strdup(satip_server_bindaddr ?: http_ip);
     http_server_port = ntohs(IP_PORT(http));
   }
-
-  if (satip_server_rtsp_port <= 0)
-    return;
 
   descramble = satip_server_conf.satip_descramble;
   rewrite_pmt = satip_server_conf.satip_rewrite_pmt;

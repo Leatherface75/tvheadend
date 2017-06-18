@@ -262,6 +262,7 @@ mpegts_mux_instance_start
 
   /* Start */
   tvhdebug(LS_MPEGTS, "%s - started", buf);
+  mm->mm_start_monoclock = mclk();
   mi->mi_started_mux(mi, mmi);
 
   /* Event handler */
@@ -415,11 +416,7 @@ mpegts_mux_class_scan_state_set ( void *o, const void *p )
   /* Start */
   if (state == MM_SCAN_STATE_PEND || state == MM_SCAN_STATE_ACTIVE) {
 
-    /* No change */
-    if (mm->mm_scan_state != MM_SCAN_STATE_IDLE)
-      return 0;
-
-    /* Start */
+    /* Start (only if required) */
     mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_USER,
                                   SUBSCRIPTION_USERSCAN, 0);
 
@@ -612,7 +609,7 @@ const idclass_t mpegts_mux_class =
       .off      = offsetof(mpegts_mux_t, mm_scan_state),
       .set      = mpegts_mux_class_scan_state_set,
       .list     = mpegts_mux_class_scan_state_enum,
-      .opts     = PO_NOSAVE | PO_SORTKEY | PO_DOC_NLIST,
+      .opts     = PO_ADVANCED | PO_NOSAVE | PO_SORTKEY | PO_DOC_NLIST,
     },
     {
       .type     = PT_INT,
@@ -656,7 +653,7 @@ const idclass_t mpegts_mux_class =
        .id       = "tsid_zero",
        .name     = N_("Accept zero value for TSID"),
        .off      = offsetof(mpegts_mux_t, mm_tsid_accept_zero_value),
-       .opts     = PO_ADVANCED
+       .opts     = PO_EXPERT
     },
     {
       .type     = PT_INT,
@@ -675,6 +672,14 @@ const idclass_t mpegts_mux_class =
       .desc     = N_("Skip TSID checking. For when providers use invalid "
                      "Transport Stream IDs."),
       .off      = offsetof(mpegts_mux_t, mm_eit_tsid_nocheck),
+      .opts     = PO_HIDDEN | PO_EXPERT
+    },
+    {
+      .type     = PT_U16,
+      .id       = "sid_filter",
+      .name     = N_("Service ID"),
+      .desc     = N_("Use only this service ID, filter out others."),
+      .off      = offsetof(mpegts_mux_t, mm_sid_filter),
       .opts     = PO_HIDDEN | PO_EXPERT
     },
     {}
@@ -1214,6 +1219,11 @@ mpegts_mux_create0
 
   mm->mm_last_pid            = -1;
 
+#if ENABLE_TSDEBUG
+  pthread_mutex_init(&mm->mm_tsdebug_lock, NULL);
+  mm->mm_tsdebug_fd = mm->mm_tsdebug_fd2 = -1;
+#endif
+
   /* Configuration */
   if (conf)
     idnode_load(&mm->mm_id, conf);
@@ -1477,6 +1487,7 @@ mpegts_mux_compare ( mpegts_mux_t *a, mpegts_mux_t *b )
                    &b->mm_network->mn_id.in_uuid);
   if (r)
     return r;
+#if ENABLE_MPEGTS_DVB
   if (idnode_is_instance(&a->mm_id, &dvb_mux_dvbs_class) &&
       idnode_is_instance(&b->mm_id, &dvb_mux_dvbs_class)) {
     dvb_mux_conf_t *mc1 = &((dvb_mux_t *)a)->lm_tuning;
@@ -1488,7 +1499,8 @@ mpegts_mux_compare ( mpegts_mux_t *a, mpegts_mux_t *b )
     if (r == 0)
       r = mc1->dmc_fe_freq - mc2->dmc_fe_freq;
   }
-  return r;
+#endif
+  return r ?: uuid_cmp(&a->mm_id.in_uuid, &b->mm_id.in_uuid);
 }
 
 /******************************************************************************

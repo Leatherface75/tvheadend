@@ -233,7 +233,7 @@ typedef struct tasklet {
   TAILQ_ENTRY(tasklet) tsk_link;
   tsk_callback_t *tsk_callback;
   void *tsk_opaque;
-  int tsk_allocated;
+  void (*tsk_free)(void *);
 } tasklet_t;
 
 tasklet_t *tasklet_arm_alloc(tsk_callback_t *callback, void *opaque);
@@ -273,6 +273,7 @@ typedef enum {
   SCT_NONE = -1,
   SCT_UNKNOWN = 0,
   SCT_RAW = 1,
+  SCT_PCR,
   SCT_MPEG2VIDEO,
   SCT_MPEG2AUDIO,
   SCT_H264,
@@ -289,7 +290,8 @@ typedef enum {
   SCT_VORBIS,
   SCT_HEVC,
   SCT_VP9,
-  SCT_LAST = SCT_VP9
+  SCT_HBBTV,
+  SCT_LAST = SCT_HBBTV
 } streaming_component_type_t;
 
 #define SCT_MASK(t) (1 << (t))
@@ -537,6 +539,7 @@ typedef enum {
 #define SM_CODE_NO_DESCRAMBLER            400
 #define SM_CODE_NO_ACCESS                 401
 #define SM_CODE_NO_INPUT                  402
+#define SM_CODE_NO_SPACE                  403
 
 typedef enum
 {
@@ -580,13 +583,18 @@ typedef struct streaming_message {
  * A streaming target receives data.
  */
 
-typedef void (st_callback_t)(void *opauqe, streaming_message_t *sm);
+typedef void (st_callback_t)(void *opaque, streaming_message_t *sm);
+
+typedef struct {
+  st_callback_t *st_cb;
+  htsmsg_t *(*st_info)(void *opaque, htsmsg_t *list);
+} streaming_ops_t;
 
 typedef struct streaming_target {
   LIST_ENTRY(streaming_target) st_link;
   streaming_pad_t *st_pad;               /* Source we are linked to */
 
-  st_callback_t *st_cb;
+ streaming_ops_t st_ops;
   void *st_opaque;
   int st_reject_filter;
 } streaming_target_t;
@@ -695,7 +703,7 @@ int tvhthread_create
    void *(*start_routine) (void *), void *arg,
    const char *name);
 
-int tvhtread_renice(int value);
+int tvhthread_renice(int value);
 
 int tvh_mutex_timedlock(pthread_mutex_t *mutex, int64_t usec);
 
@@ -816,12 +824,13 @@ char *regexp_escape ( const char *str );
 uint8_t *tvh_gzip_inflate ( const uint8_t *data, size_t size, size_t orig );
 uint8_t *tvh_gzip_deflate ( const uint8_t *data, size_t orig, size_t *size );
 int      tvh_gzip_deflate_fd ( int fd, const uint8_t *data, size_t orig, size_t *size, int speed );
-int      tvh_gzip_deflate_fd_header ( int fd, const uint8_t *data, size_t orig, int speed );
+int      tvh_gzip_deflate_fd_header ( int fd, const uint8_t *data, size_t orig, size_t *size, int speed );
 #endif
 
 /* URL decoding */
 char to_hex(char code);
 char *url_encode(const char *str);
+void http_deescape(char *str);
 
 int mpegts_word_count(const uint8_t *tsb, int len, uint32_t mask);
 

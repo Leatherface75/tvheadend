@@ -29,6 +29,22 @@
 #include "dvr/dvr.h"
 
 /* ************************************************************************
+ * Opaque
+ * ***********************************************************************/
+
+typedef struct eit_private
+{
+  uint16_t pid;
+  uint8_t  conv;
+  uint8_t  spec;
+} eit_private_t;
+
+#define EIT_CONV_HUFFMAN     1
+
+#define EIT_SPEC_UK_FREESAT  1
+#define EIT_SPEC_NZ_FREEVIEW 2
+
+/* ************************************************************************
  * Status handling
  * ***********************************************************************/
 
@@ -92,20 +108,15 @@ static dvb_string_conv_t _eit_freesat_conv[2] = {
  * Get string
  */
 static int _eit_get_string_with_len
-  ( epggrab_module_t *m,
+  ( epggrab_module_t *mod,
     char *dst, size_t dstlen, 
-		const uint8_t *src, size_t srclen, const char *charset )
+    const uint8_t *src, size_t srclen, const char *charset )
 {
+  epggrab_module_ota_t *m = (epggrab_module_ota_t *)mod;
   dvb_string_conv_t *cptr = NULL;
 
-  /* Enable huffman decode (for freeview and/or freesat) */
-  m = epggrab_module_find_by_id("uk_freesat");
-  if (m && m->enabled) {
+  if (((eit_private_t *)m->opaque)->conv == EIT_CONV_HUFFMAN)
     cptr = _eit_freesat_conv;
-  } else {
-    m = epggrab_module_find_by_id("uk_freeview");
-    if (m && m->enabled) cptr = _eit_freesat_conv;
-  }
 
   /* Convert */
   return dvb_get_string_with_len(dst, dstlen, src, srclen, charset, cptr);
@@ -410,16 +421,18 @@ static int _eit_process_event_one
     const uint8_t *ptr, int len,
     int local, int *resched, int *save )
 {
-  int dllen, save2 = 0;
+  int dllen, save2 = 0, rsonly = 0;
   time_t start, stop;
   uint16_t eid;
   uint8_t dtag, dlen, running;
-  epg_broadcast_t *ebc;
-  epg_episode_t *ee = NULL;
+  epg_broadcast_t *ebc, _ebc;
+  epg_episode_t *ee = NULL, _ee;
   epg_serieslink_t *es;
   epg_running_t run;
   eit_event_t ev;
+  lang_str_t *title_copy = NULL;
   uint32_t changes2 = 0, changes3 = 0, changes4 = 0;
+  char tm1[32], tm2[32];
 
   /* Core fields */
   eid   = ptr[0] << 8 | ptr[1];
@@ -436,15 +449,25 @@ static int _eit_process_event_one
 
   /* Find broadcast */
   ebc  = epg_broadcast_find_by_time(ch, mod, start, stop, 1, &save2, &changes2);
-  tvhtrace(LS_TBL_EIT, "svc='%s', ch='%s', eid=%5d, start=%"PRItime_t","
-                       " stop=%"PRItime_t", ebc=%p",
-           svc->s_dvb_svcname ?: "(null)", ch ? channel_get_name(ch) : "(null)",
-           eid, start, stop, ebc);
-  if (!ebc) return 0;
+  tvhtrace(LS_TBL_EIT, "svc='%s', ch='%s', eid=%5d, tbl=%02x, running=%d, start=%s,"
+                       " stop=%s, ebc=%p",
+           svc->s_dvb_svcname ?: "(null)",
+           ch ? channel_get_name(ch, channel_blank_name) : "(null)",
+           eid, tableid, running,
+           gmtime2local(start, tm1, sizeof(tm1)),
+           gmtime2local(stop, tm2, sizeof(tm2)), ebc);
+  if (!ebc) {
+    if (tableid == 0x4e)
+      rsonly = 1;
+    else
+      return 0;
+  }
 
   /* Mark re-schedule detect (only now/next) */
-  if (save2 && tableid < 0x50) *resched = 1;
-  *save |= save2;
+  if (!rsonly) {
+    if (save2 && tableid < 0x50) *resched = 1;
+    *save |= save2;
+  }
 
   /* Process tags */
   memset(&ev, 0, sizeof(ev));
@@ -490,6 +513,30 @@ static int _eit_process_event_one
     if (r < 0) break;
     dllen -= dlen;
     ptr   += dlen;
+  }
+
+  if (rsonly) {
+    if (!ev.title)
+      goto tidy;
+    memset(&_ebc, 0, sizeof(_ebc));
+    if (*ev.suri)
+      if ((es = epg_serieslink_find_by_uri(ev.suri, mod, 0, 0, NULL)))
+        _ebc.serieslink = es;
+    
+    if (*ev.uri && (ee = epg_episode_find_by_uri(ev.uri, mod, 0, 0, NULL))) {
+      _ee = *ee;
+    } else {
+      memset(&_ee, 0, sizeof(_ee));
+    }
+    _ebc.episode = &_ee;
+    _ebc.dvb_eid = eid;
+    _ebc.start = start;
+    _ebc.stop = stop;
+    _ee.title = title_copy = lang_str_copy(ev.title);
+
+    ebc = epg_match_now_next(ch, &_ebc);
+    tvhtrace(mod->subsys, "%s:  running state only ebc=%p", svc->s_dvb_svcname ?: "(null)", ebc);
+    goto tidy;
   }
 
   /*
@@ -554,6 +601,8 @@ static int _eit_process_event_one
 
   *save |= epg_broadcast_change_finish(ebc, changes2, 0);
 
+
+tidy:
   /* Tidy up */
 #if TODO_ADD_EXTRA
   if (ev.extra)   htsmsg_destroy(ev.extra);
@@ -564,7 +613,7 @@ static int _eit_process_event_one
   if (ev.desc)    lang_str_destroy(ev.desc);
 
   /* use running flag only for current broadcast */
-  if (running && tableid == 0x4e) {
+  if (ebc && running && tableid == 0x4e) {
     if (sect == 0) {
       switch (running) {
       case 2:  run = EPG_RUNNING_WARM;  break;
@@ -574,10 +623,10 @@ static int _eit_process_event_one
       }
       epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, run);
     } else if (sect == 1 && running != 2 && running != 3 && running != 4) {
-      epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, EPG_RUNNING_STOP);
     }
   }
 
+  if (title_copy) lang_str_destroy(title_copy);
   return 0;
 }
 
@@ -606,8 +655,7 @@ static int
 _eit_callback
   (mpegts_table_t *mt, const uint8_t *ptr, int len, int tableid)
 {
-  int r;
-  int sect, last, ver, save, resched;
+  int r, sect, last, ver, save, resched, spec;
   uint8_t  seg;
   uint16_t onid, tsid, sid;
   uint32_t extraid;
@@ -626,6 +674,7 @@ _eit_callback
   mm  = mt->mt_mux;
   map = mt->mt_opaque;
   mod = (epggrab_module_t *)map->om_module;
+  spec = ((eit_private_t *)((epggrab_module_ota_t *)mod)->opaque)->spec;
 
   /* Statistics */
   ths = mpegts_mux_find_subscription_by_name(mm, "epggrab");
@@ -649,9 +698,18 @@ _eit_callback
   extraid = ((uint32_t)tsid << 16) | sid;
   // TODO: extra ID should probably include onid
 
+  tvhtrace(LS_TBL_EIT, "%s: sid %i tsid %04x onid %04x seg %02x",
+           mt->mt_name, sid, tsid, onid, seg);
+
+  /* Local EIT contents - give them another priority to override main events */
+  if (spec == EIT_SPEC_NZ_FREEVIEW &&
+      ((tsid > 0x19 && tsid < 0x1d) ||
+       (tsid > 0x1e && tsid < 0x21)))
+    mod = epggrab_module_find_by_id("nz_freeview");
+
   /* Register interest */
   if (tableid == 0x4e || (tableid >= 0x50 && tableid < 0x60) ||
-      mt->mt_pid == 3003 /* uk_freesat */)
+      spec == EIT_SPEC_UK_FREESAT /* uk_freesat hack */)
     ota = epggrab_ota_register((epggrab_module_ota_t*)mod, NULL, mm);
 
   /* Begin */
@@ -672,17 +730,16 @@ _eit_callback
   /* Get transport stream */
   // Note: tableid=0x4f,0x60-0x6f is other TS
   //       so must find the tdmi
-  if(tableid == 0x4f || tableid >= 0x60) {
+  if (tableid == 0x4f || tableid >= 0x60) {
     mm = mpegts_network_find_mux(mm->mm_network, onid, tsid, 1);
-
   } else {
     if ((mm->mm_tsid != tsid || mm->mm_onid != onid) &&
         !mm->mm_eit_tsid_nocheck) {
       if (mm->mm_onid != MPEGTS_ONID_NONE &&
           mm->mm_tsid != MPEGTS_TSID_NONE)
         tvhtrace(LS_TBL_EIT,
-                "invalid tsid found tid 0x%02X, onid:tsid %d:%d != %d:%d",
-                tableid, mm->mm_onid, mm->mm_tsid, onid, tsid);
+                "%s: invalid tsid found tid 0x%02X, onid:tsid %d:%d != %d:%d",
+                mt->mt_name, tableid, mm->mm_onid, mm->mm_tsid, onid, tsid);
       mm = NULL;
     }
   }
@@ -692,10 +749,19 @@ _eit_callback
   /* Get service */
   svc = mpegts_mux_find_service(mm, sid);
   if (!svc) {
+    /* NZ Freesat: use main data */
+    if (spec == EIT_SPEC_NZ_FREEVIEW && onid == 0x222a &&
+        (tsid == 0x19 || tsid == 0x1d)) {
+      svc = mpegts_network_find_active_service(mm->mm_network, sid, &mm);
+      if (svc)
+        goto svc_ok;
+    }
+
     tvhtrace(LS_TBL_EIT, "sid %i not found", sid);
     goto done;
   }
 
+svc_ok:
   if (map->om_first) {
     map->om_tune_count++;
     map->om_first = 0;
@@ -747,37 +813,50 @@ complete:
 static int _eit_start
   ( epggrab_ota_map_t *map, mpegts_mux_t *dm )
 {
-  epggrab_module_ota_t *m = map->om_module;
-  int pid, opts = 0;
+  epggrab_module_ota_t *m = map->om_module, *eit = NULL;
+  eit_private_t *priv = (eit_private_t *)m->opaque;
+  int pid, opts = 0, spec;
 
   /* Disabled */
   if (!m->enabled && !map->om_forced) return -1;
 
-  /* Freeview (switch to EIT, ignore if explicitly enabled) */
-  // Note: do this as PID is the same
-  if (!strcmp(m->id, "uk_freeview")) {
-    m = (epggrab_module_ota_t*)epggrab_module_find_by_id("eit");
-    if (m->enabled) return -1;
+  spec = priv->spec;
+
+  /* Do string conversions also for the EIT table */
+  /* FIXME: It should be done only for selected muxes or networks */
+  if (((eit_private_t *)m->opaque)->conv) {
+    eit = (epggrab_module_ota_t*)epggrab_module_find_by_id("eit");
+    ((eit_private_t *)eit->opaque)->spec = priv->spec;
+    ((eit_private_t *)eit->opaque)->conv = priv->conv;
+  }
+
+  if (spec == EIT_SPEC_NZ_FREEVIEW) {
+    if (eit == NULL)
+      eit = (epggrab_module_ota_t*)epggrab_module_find_by_id("eit");
+    if (eit->enabled)
+      map->om_complete = 1;
+  }
+
+  pid = priv->pid;
+
+  /* Freeview UK/NZ (switch to EIT, ignore if explicitly enabled) */
+  /* Note: do this as PID is the same */
+  if (pid == 0 && strcmp(m->id, "eit")) {
+    if (eit == NULL)
+      eit = (epggrab_module_ota_t*)epggrab_module_find_by_id("eit");
+    if (eit->enabled) return -1;
   }
 
   /* Freesat (3002/3003) */
-  if (!strcmp("uk_freesat", m->id)) {
+  if (pid == 3003 && !strcmp("uk_freesat", m->id))
     mpegts_table_add(dm, 0, 0, dvb_bat_callback, NULL, "bat", LS_TBL_BASE, MT_CRC, 3002, MPS_WEIGHT_EIT);
-    pid = 3003;
-
-  /* Viasat Baltic (0x39) */
-  } else if (!strcmp("viasat_baltic", m->id)) {
-    pid = 0x39;
-
-  /* Bulsatcom 39E (0x12b) */
-  } else if (!strcmp("Bulsatcom_39E", m->id)) {
-    pid = 0x12b;
 
   /* Standard (0x12) */
-  } else {
+  if (pid == 0) {
     pid  = DVB_EIT_PID;
     opts = MT_RECORD;
   }
+
   mpegts_table_add(dm, 0, 0, _eit_callback, map, m->id, LS_TBL_EIT, MT_CRC | opts, pid, MPS_WEIGHT_EIT);
   // TODO: might want to limit recording to EITpf only
   tvhdebug(m->subsys, "%s: installed table handlers", m->id);
@@ -819,18 +898,36 @@ static int _eit_tune
   return r;
 }
 
+#define EIT_OPS(name, _pid, _conv, _spec) \
+  static eit_private_t opaque_##name = { \
+    .pid = (_pid), \
+    .conv = (_conv), \
+    .spec = (_spec), \
+  }; \
+  static epggrab_ota_module_ops_t name = { \
+    .start  = _eit_start, \
+    .tune   = _eit_tune, \
+    .opaque = &opaque_##name, \
+  }
+
+#define EIT_CREATE(id, name, prio, ops) \
+  epggrab_module_ota_create(NULL, id, LS_TBL_EIT, NULL, name, prio, ops)
+
 void eit_init ( void )
 {
-  static epggrab_ota_module_ops_t ops = {
-    .start = _eit_start,
-    .tune  = _eit_tune,
-  };
+  EIT_OPS(ops, 0, 0, 0);
+  EIT_OPS(ops_uk_freesat, 3003, EIT_CONV_HUFFMAN, EIT_SPEC_UK_FREESAT);
+  EIT_OPS(ops_uk_freeview, 0, EIT_CONV_HUFFMAN, 0);
+  EIT_OPS(ops_nz_freeview, 0, EIT_CONV_HUFFMAN, EIT_SPEC_NZ_FREEVIEW);
+  EIT_OPS(ops_baltic, 0x39, 0, 0);
+  EIT_OPS(ops_bulsat, 0x12b, 0, 0);
 
-  epggrab_module_ota_create(NULL, "eit", LS_TBL_EIT, NULL, "EIT: DVB Grabber", 1, &ops);
-  epggrab_module_ota_create(NULL, "uk_freesat", LS_TBL_EIT, NULL, "UK: Freesat", 5, &ops);
-  epggrab_module_ota_create(NULL, "uk_freeview", LS_TBL_EIT, NULL, "UK: Freeview", 5, &ops);
-  epggrab_module_ota_create(NULL, "viasat_baltic", LS_TBL_EIT, NULL, "VIASAT: Baltic", 5, &ops);
-  epggrab_module_ota_create(NULL, "Bulsatcom_39E", LS_TBL_EIT, NULL, "Bulsatcom: Bula 39E", 5, &ops);
+  EIT_CREATE("eit", "EIT: DVB Grabber", 1, &ops);
+  EIT_CREATE("uk_freesat", "UK: Freesat", 5, &ops_uk_freesat);
+  EIT_CREATE("uk_freeview", "UK: Freeview", 5, &ops_uk_freeview);
+  EIT_CREATE("nz_freeview", "New Zealand: Freeview", 5, &ops_nz_freeview);
+  EIT_CREATE("viasat_baltic", "VIASAT: Baltic", 5, &ops_baltic);
+  EIT_CREATE("Bulsatcom_39E", "Bulsatcom: Bula 39E", 5, &ops_bulsat);
 }
 
 void eit_done ( void )

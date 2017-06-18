@@ -46,12 +46,11 @@
 #include "intlconv.h"
 #include "memoryinfo.h"
 
-#define CHANNEL_BLANK_NAME  "{name-not-set}"
-
 struct channel_tree channels;
 
 struct channel_tag_queue channel_tags;
 
+const char *channel_blank_name = N_("{name-not-set}");
 static int channel_in_load;
 
 static void channel_tag_init ( void );
@@ -74,9 +73,20 @@ channel_class_changed ( idnode_t *self )
 {
   channel_t *ch = (channel_t *)self;
 
+  if (atomic_add(&ch->ch_changed_ref, 1) > 0)
+    goto end;
+
+  tvhdebug(LS_CHANNEL, "channel '%s' changed", channel_get_name(ch, channel_blank_name));
+
   /* update the EPG channel <-> channel mapping here */
   if (ch->ch_enabled && ch->ch_epgauto)
     epggrab_channel_add(ch);
+
+  /* HTSP */
+  htsp_channel_update(ch);
+
+end:
+  atomic_dec(&ch->ch_changed_ref, 0);
 }
 
 static htsmsg_t *
@@ -87,6 +97,7 @@ channel_class_save ( idnode_t *self, char *filename, size_t fsize )
   char ubuf[UUID_HEX_SIZE];
   /* save channel (on demand) */
   if (ch->ch_dont_save == 0) {
+    tvhdebug(LS_CHANNEL, "channel '%s' save", channel_get_name(ch, channel_blank_name));
     c = htsmsg_create_map();
     idnode_save(&ch->ch_id, c);
     snprintf(filename, fsize, "channel/config/%s", idnode_uuid_as_str(&ch->ch_id, ubuf));
@@ -108,9 +119,13 @@ channel_class_autoname_set ( void *obj, const void *p )
   int b = *(int *)p;
   if (ch->ch_autoname != b) {
     if (b == 0 && (!ch->ch_name || *ch->ch_name == '\0')) {
-      s = channel_get_name(ch);
-      free(ch->ch_name);
-      ch->ch_name = strdup(s);
+      s = channel_get_name(ch, NULL);
+      if (s) {
+        free(ch->ch_name);
+        ch->ch_name = strdup(s);
+      } else {
+        return 0;
+      }
     } else if (b) {
       if (ch->ch_name)
         ch->ch_name[0] = '\0';
@@ -205,7 +220,7 @@ channel_class_get_icon ( void *obj )
 static const char *
 channel_class_get_title ( idnode_t *self, const char *lang )
 {
-  return channel_get_name((channel_t*)self);
+  return channel_get_name((channel_t*)self, tvh_gettext_lang(lang, channel_blank_name));
 }
 
 /* exported for others */
@@ -241,7 +256,7 @@ static const void *
 channel_class_get_name ( void *o )
 {
   static const char *s;
-  s = channel_get_name(o);
+  s = channel_get_name(o, channel_blank_name);
   return &s;
 }
 
@@ -376,6 +391,7 @@ const idclass_t channel_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the channel."),
+      .def.i    = 1,
       .off      = offsetof(channel_t, ch_enabled),
     },
     {
@@ -439,6 +455,7 @@ const idclass_t channel_class = {
                      "turn this option off, only the OTA EPG grabber "
                      "will be used for this channel unless you've "
                      "specifically set a different EPG Source."),
+      .def.i    = 1,
       .off      = offsetof(channel_t, ch_epgauto),
       .opts     = PO_ADVANCED,
     },
@@ -489,7 +506,7 @@ const idclass_t channel_class = {
       .doc      = prop_doc_runningstate,
       .off      = offsetof(channel_t, ch_epg_running),
       .list     = channel_class_epg_running_list,
-      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .opts     = PO_EXPERT | PO_DOC_NLIST,
     },
     {
       .type     = PT_STR,
@@ -501,7 +518,6 @@ const idclass_t channel_class = {
       .set      = channel_class_services_set,
       .list     = channel_class_services_enum,
       .rend     = channel_class_services_rend,
-      .opts     = PO_ADVANCED
     },
     {
       .type     = PT_STR,
@@ -550,11 +566,16 @@ channel_t *
 channel_find_by_name ( const char *name )
 {
   channel_t *ch;
+  const char *s;
+
   if (name == NULL)
     return NULL;
-  CHANNEL_FOREACH(ch)
-    if (ch->ch_enabled && !strcmp(channel_get_name(ch), name))
-      break;
+  CHANNEL_FOREACH(ch) {
+    if (!ch->ch_enabled) continue;
+    s = channel_get_name(ch, NULL);
+    if (s == NULL) continue;
+    if (strcmp(s, name) == 0) break;
+  }
   return ch;
 }
 
@@ -667,9 +688,8 @@ channel_epg_update_all ( channel_t *ch )
  * *************************************************************************/
 
 const char *
-channel_get_name ( channel_t *ch )
+channel_get_name ( channel_t *ch, const char *blank )
 {
-  static const char *blank = CHANNEL_BLANK_NAME;
   const char *s;
   idnode_list_mapping_t *ilm;
   if (ch->ch_name && *ch->ch_name) return ch->ch_name;
@@ -700,12 +720,17 @@ channel_get_number ( channel_t *ch )
   if (ch->ch_number) {
     n = ch->ch_number;
   } else {
-    LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
-      if (ch->ch_bouquet &&
-          (n = bouquet_get_channel_number(ch->ch_bouquet, (service_t *)ilm->ilm_in1)))
-        break;
-      if ((n = service_get_channel_number((service_t *)ilm->ilm_in1)))
-        break;
+    if (ch->ch_bouquet) {
+      LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
+        if ((n = bouquet_get_channel_number(ch->ch_bouquet, (service_t *)ilm->ilm_in1)))
+          break;
+      }
+    }
+    if (n == 0) {
+      LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
+        if ((n = service_get_channel_number((service_t *)ilm->ilm_in1)))
+          break;
+      }
     }
   }
   if (n) {
@@ -767,8 +792,11 @@ svcnamepicons(const char *svcname)
 static int
 check_file( const char *url )
 {
-  if (url && !strncmp(url, "file://", 7))
-    return access(url + 7, R_OK) == 0;
+  if (url && !strncmp(url, "file://", 7)) {
+    char *s = tvh_strdupa(url + 7);
+    http_deescape(s);
+    return access(s, R_OK) == 0;
+  }
   return 1;
 }
 
@@ -813,8 +841,7 @@ channel_get_icon ( channel_t *ch )
 
     /* No user icon - try to get the channel icon by name */
     if (!pick && chicon && chicon[0] >= ' ' && chicon[0] <= 122 &&
-        (chname = channel_get_name(ch)) != NULL && chname[0] &&
-        strcmp(chname, CHANNEL_BLANK_NAME)) {
+        (chname = channel_get_name(ch, NULL)) != NULL && chname[0]) {
       const char *chi, *send, *sname, *s;
       chi = strdup(chicon);
 
@@ -954,7 +981,7 @@ channel_get_epgid ( channel_t *ch )
   LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link)
     if ((s = service_get_channel_epgid((service_t *)ilm->ilm_in1)))
       return s;
-  return channel_get_name(ch);
+  return channel_get_name(ch, NULL);
 }
 
 /* **************************************************************************
@@ -990,6 +1017,8 @@ channel_create0
   ch->ch_autoname = 1;
   ch->ch_epgauto  = 1;
   ch->ch_epg_running = -1;
+
+  atomic_set(&ch->ch_changed_ref, 0);
 
   if (conf) {
     ch->ch_load = 1;
@@ -1028,7 +1057,7 @@ channel_delete ( channel_t *ch, int delconf )
   idnode_save_check(&ch->ch_id, delconf);
 
   if (delconf)
-    tvhinfo(LS_CHANNEL, "%s - deleting", channel_get_name(ch));
+    tvhinfo(LS_CHANNEL, "%s - deleting", channel_get_name(ch, channel_blank_name));
 
   /* Tags */
   while((ilm = LIST_FIRST(&ch->ch_ctms)) != NULL)
@@ -1052,9 +1081,14 @@ channel_delete ( channel_t *ch, int delconf )
   /* EPG */
   epggrab_channel_rem(ch);
   epg_channel_unlink(ch);
+  if (ch->ch_epg_parent) {
+    LIST_SAFE_REMOVE(ch, ch_epg_slave_link);
+    free(ch->ch_epg_parent);
+    ch->ch_epg_parent = NULL;
+  }
   for (ch1 = LIST_FIRST(&ch->ch_epg_slaves); ch1; ch1 = ch2) {
     ch2 = LIST_NEXT(ch1, ch_epg_slave_link);
-    LIST_REMOVE(ch1, ch_epg_slave_link);
+    LIST_SAFE_REMOVE(ch1, ch_epg_slave_link);
     if (delconf) {
       free(ch1->ch_epg_parent);
       ch1->ch_epg_parent = NULL;
@@ -1249,12 +1283,16 @@ channel_tag_create(const char *uuid, htsmsg_t *conf)
   if (conf)
     idnode_load(&ct->ct_id, conf);
 
+  /* Defaults */
   if (ct->ct_name == NULL)
     ct->ct_name = strdup("New tag");
   if (ct->ct_comment == NULL)
     ct->ct_comment = strdup("");
   if (ct->ct_icon == NULL)
     ct->ct_icon = strdup("");
+
+  /* HTSP */
+  htsp_tag_add(ct);
 
   TAILQ_INSERT_TAIL(&channel_tags, ct, ct_link);
   return ct;
@@ -1277,8 +1315,8 @@ channel_tag_destroy(channel_tag_t *ct, int delconf)
   if (delconf)
     hts_settings_remove("channel/tag/%s", idnode_uuid_as_str(&ct->ct_id, ubuf));
 
-  if(ct->ct_enabled && !ct->ct_internal)
-    htsp_tag_delete(ct);
+  /* HTSP */
+  htsp_tag_delete(ct);
 
   TAILQ_REMOVE(&channel_tags, ct, ct_link);
   idnode_unlink(&ct->ct_id);
@@ -1345,6 +1383,13 @@ chtags_ok:
  * Channel Tag Class definition
  * **************************************************************************/
 
+static void
+channel_tag_class_changed(idnode_t *self)
+{
+  /* HTSP */
+  htsp_tag_update((channel_tag_t *)self);
+}
+
 static htsmsg_t *
 channel_tag_class_save(idnode_t *self, char *filename, size_t fsize)
 {
@@ -1353,7 +1398,6 @@ channel_tag_class_save(idnode_t *self, char *filename, size_t fsize)
   char ubuf[UUID_HEX_SIZE];
   idnode_save(&ct->ct_id, c);
   snprintf(filename, fsize, "channel/tag/%s", idnode_uuid_as_str(&ct->ct_id, ubuf));
-  htsp_tag_update(ct);
   return c;
 }
 
@@ -1405,6 +1449,7 @@ const idclass_t channel_tag_class = {
   .ic_caption    = N_("Channel Tags"),
   .ic_doc        = tvh_doc_channeltag_class,
   .ic_event      = "channeltag",
+  .ic_changed    = channel_tag_class_changed,
   .ic_save       = channel_tag_class_save,
   .ic_get_title  = channel_tag_class_get_title,
   .ic_delete     = channel_tag_class_delete,
@@ -1414,6 +1459,7 @@ const idclass_t channel_tag_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the tag."),
+      .def.i    = 1,
       .off      = offsetof(channel_tag_t, ct_enabled),
     },
     {
@@ -1447,7 +1493,7 @@ const idclass_t channel_tag_class = {
                      "no tags at all) set in "
                      "access configuration to use the tag."),
       .off      = offsetof(channel_tag_t, ct_private),
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       .type     = PT_STR,
@@ -1474,7 +1520,7 @@ const idclass_t channel_tag_class = {
       .desc     = N_("If set, presentation of the tag icon will not "
                      "superimpose the tag name on top of the icon."),
       .off      = offsetof(channel_tag_t, ct_titled_icon),
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       .type     = PT_STR,

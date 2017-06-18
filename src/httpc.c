@@ -63,7 +63,6 @@ struct http_client_ssl {
   size_t   wbio_pos;
 };
 
-
 static int
 http_client_redirected ( http_client_t *hc );
 static int
@@ -76,7 +75,6 @@ http_client_reconnect
 static void
 http_client_testsuite_run( void );
 #endif
-
 
 /*
  * Global state
@@ -96,6 +94,27 @@ static inline int
 shortid( http_client_t *hc )
 {
   return hc->hc_id;
+}
+
+/*
+ *
+ */
+static void
+http_client_get( http_client_t *hc )
+{
+  hc->hc_refcnt++;
+}
+
+static void
+http_client_put( http_client_t *hc )
+{
+  hc->hc_refcnt--;
+}
+
+static int
+http_client_busy( http_client_t *hc )
+{
+  return !!hc->hc_refcnt;
 }
 
 /*
@@ -127,6 +146,7 @@ http_client_shutdown ( http_client_t *hc, int force, int reconnect )
 {
   struct http_client_ssl *ssl = hc->hc_ssl;
 
+  tvhtrace(LS_HTTPC, "%04X: shutdown", shortid(hc));
   hc->hc_shutdown = 1;
   if (ssl) {
     if (!ssl->shutdown) {
@@ -153,9 +173,11 @@ http_client_shutdown ( http_client_t *hc, int force, int reconnect )
   }
   if (hc->hc_fd >= 0) {
     if (hc->hc_conn_closed) {
+      http_client_get(hc);
       pthread_mutex_unlock(&hc->hc_mutex);
       hc->hc_conn_closed(hc, -hc->hc_result);
       pthread_mutex_lock(&hc->hc_mutex);
+      http_client_put(hc);
     }
     if (hc->hc_fd >= 0)
       close(hc->hc_fd);
@@ -173,6 +195,7 @@ http_client_poll_dir ( http_client_t *hc, int in, int out )
   tvhpoll_event_t ev;
   if (hc->hc_efd) {
     if (events == 0 && hc->hc_pause) {
+      tvhtrace(LS_HTTPC, "%04X: pausing input", shortid(hc));
       if (hc->hc_pevents_pause == 0)
         hc->hc_pevents_pause = hc->hc_pevents;
       memset(&ev, 0, sizeof(ev));
@@ -180,6 +203,7 @@ http_client_poll_dir ( http_client_t *hc, int in, int out )
       ev.data.ptr = hc;
       tvhpoll_rem(hc->hc_efd, &ev, 1);
     } else if (hc->hc_pevents != events) {
+      tvhtrace(LS_HTTPC, "%04X: add poll for input%s (%x)", shortid(hc), out ? " and output" : "", events);
       memset(&ev, 0, sizeof(ev));
       ev.fd       = hc->hc_fd;
       ev.events   = events | TVHPOLL_IN;
@@ -188,7 +212,7 @@ http_client_poll_dir ( http_client_t *hc, int in, int out )
     }
   }
   hc->hc_pevents = events;
-  /* make sure to se the correct errno for our SSL routines */
+  /* make sure to set the correct errno for our SSL routines */
   errno = EAGAIN;
 }
 
@@ -196,10 +220,12 @@ void
 http_client_unpause( http_client_t *hc )
 {
   if (hc->hc_pause) {
-    http_client_poll_dir(hc, hc->hc_pevents_pause & TVHPOLL_IN,
-                             hc->hc_pevents_pause & TVHPOLL_OUT);
+    int pevents_pause = hc->hc_pevents_pause;
+    tvhtrace(LS_HTTPC, "%04X: resuming input", shortid(hc));
     hc->hc_pause = 0;
     hc->hc_pevents_pause = 0;
+    http_client_poll_dir(hc, pevents_pause & TVHPOLL_IN,
+            pevents_pause & TVHPOLL_OUT);
   }
 }
 
@@ -613,10 +639,11 @@ error:
     TAILQ_FOREACH(h, header, link) {
       htsbuf_append_str(&q, h->key);
       htsbuf_append(&q, ": ", 2);
-      htsbuf_append_str(&q, h->val);
+      if (h->val)
+        htsbuf_append_str(&q, h->val);
       htsbuf_append(&q, "\r\n", 2);
       if (strcasecmp(h->key, "Connection") == 0 &&
-          strcasecmp(h->val, "close") == 0)
+          strcasecmp(h->val ?: "", "close") == 0)
         hc->hc_keepalive = 0;
     }
     http_arg_flush(header);
@@ -661,20 +688,22 @@ http_client_finish( http_client_t *hc )
   http_client_wcmd_t *wcmd;
   int res;
 
-  if (hc->hc_data && tvhtrace_enabled()) {
-    tvhtrace(LS_HTTPC, "%04X: received %s data", shortid(hc), http_ver2str(hc->hc_version));
-    tvhlog_hexdump(LS_HTTPC, hc->hc_data, hc->hc_csize);
-  }
+  tvhtrace(LS_HTTPC, "%04X: finishing", shortid(hc));
+
   if (hc->hc_in_rtp_data && hc->hc_rtp_data_complete) {
+    http_client_get(hc);
     pthread_mutex_unlock(&hc->hc_mutex);
     res = hc->hc_rtp_data_complete(hc);
     pthread_mutex_lock(&hc->hc_mutex);
+    http_client_put(hc);
     if (res < 0)
       return http_client_flush(hc, res);
   } else if (hc->hc_data_complete) {
+    http_client_get(hc);
     pthread_mutex_unlock(&hc->hc_mutex);
     res = hc->hc_data_complete(hc);
     pthread_mutex_lock(&hc->hc_mutex);
+    http_client_put(hc);
     if (res < 0)
       return http_client_flush(hc, res);
   }
@@ -738,9 +767,11 @@ http_client_data_copy( http_client_t *hc, char *buf, size_t len )
   int res;
 
   if (hc->hc_data_received) {
+    http_client_get(hc);
     pthread_mutex_unlock(&hc->hc_mutex);
     res = hc->hc_data_received(hc, buf, len);
     pthread_mutex_lock(&hc->hc_mutex);
+    http_client_put(hc);
     if (res < 0)
       return res;
   } else {
@@ -952,30 +983,37 @@ retry:
   else
     r = recv(hc->hc_fd, buf, hc->hc_io_size, MSG_DONTWAIT);
   if (r == 0) {
-    if (hc->hc_in_data && !hc->hc_keepalive)
+    tvhtrace(LS_HTTPC, "%04X: end of stream", shortid(hc));
+    if (hc->hc_in_data && !hc->hc_keepalive) {
+      tvhtrace(LS_HTTPC, "%04X: no keep-alive, finishing", shortid(hc));
       return http_client_finish(hc);
+    }
     return http_client_flush(hc, -EIO);
   }
   if (r < 0) {
-    if (errno == EIO && hc->hc_in_data && !hc->hc_keepalive)
+    if (errno == EIO && hc->hc_in_data && !hc->hc_keepalive) {
+      tvhtrace(LS_HTTPC, "%04X: error reading: %s", shortid(hc), strerror(errno));
+      tvhtrace(LS_HTTPC, "%04X: no keep-alive, finishing", shortid(hc));
       return http_client_finish(hc);
+    }
     if (ERRNO_AGAIN(errno))
       return HTTP_CON_RECEIVING;
+    tvhtrace(LS_HTTPC, "%04X: error reading: %s", shortid(hc), strerror(errno));
     return http_client_flush(hc, -errno);
-  }
-  if (r > 0 && tvhtrace_enabled()) {
-    tvhtrace(LS_HTTPC, "%04X: received %s answer (len = %zd)", shortid(hc), http_ver2str(hc->hc_version), r);
-    tvhlog_hexdump(LS_HTTPC, buf, MIN(64, r));
   }
 
   if (hc->hc_in_data && !hc->hc_in_rtp_data) {
     res = http_client_data_received(hc, buf, r, 0);
     if (res < 0)
       return http_client_flush(hc, res);
-    if (res > 0)
+    if (res > 0) {
+      tvhtrace(LS_HTTPC, "%04X: data complete, finishing", shortid(hc));
       return http_client_finish(hc);
-    if (hc->hc_data_limit && r + hc->hc_rsize >= hc->hc_data_limit)
+    }
+    if (hc->hc_data_limit && r + hc->hc_rsize >= hc->hc_data_limit) {
+      tvhtrace(LS_HTTPC, "%04X: data overflow", shortid(hc));
       return http_client_flush(hc, -EOVERFLOW);
+    }
     goto retry;
   }
 
@@ -1054,9 +1092,11 @@ header:
   if (p)
     hc->hc_chunked = strcasecmp(p, "chunked") == 0;
   if (hc->hc_hdr_received) {
+    http_client_get(hc);
     pthread_mutex_unlock(&hc->hc_mutex);
     res = hc->hc_hdr_received(hc);
     pthread_mutex_lock(&hc->hc_mutex);
+    http_client_put(hc);
     if (res < 0)
       return http_client_flush(hc, res);
   }
@@ -1102,9 +1142,11 @@ rtsp_data:
       return HTTP_CON_RECEIVING;
     }
     if (hc->hc_rtp_data_received) {
+      http_client_get(hc);
       pthread_mutex_unlock(&hc->hc_mutex);
       res = hc->hc_rtp_data_received(hc, hc->hc_rbuf + r, hc->hc_csize);
       pthread_mutex_lock(&hc->hc_mutex);
+      http_client_put(hc);
       if (res < 0)
         return res;
     } else {
@@ -1211,7 +1253,7 @@ http_client_add_args ( http_client_t *hc, http_arg_list_t *h, const char *args )
 
   if (args == NULL)
     return;
-  p = strdupa(args);
+  p = tvh_strdupa(args);
   while (*p) {
     while (*p && *p <= ' ') p++;
     if (*p == '\0') break;
@@ -1239,6 +1281,8 @@ http_client_simple_reconnect ( http_client_t *hc, const url_t *u,
   http_arg_list_t h;
   tvhpoll_t *efd;
   int r;
+
+  lock_assert(&hc->hc_mutex);
 
   if (u->scheme == NULL || u->scheme[0] == '\0' ||
       u->host == NULL || u->host[0] == '\0' ||
@@ -1309,8 +1353,6 @@ http_client_redirected ( http_client_t *hc )
     free(location);
     return -EIO;
   }
-  free(hc->hc_url);
-  hc->hc_url = u.raw ? strdup(u.raw) : NULL;
   free(location);
 
   r = http_client_simple_reconnect(hc, &u, hc->hc_redirv);
@@ -1587,6 +1629,11 @@ http_client_close ( http_client_t *hc )
     pthread_mutex_unlock(&http_lock);
   }
   pthread_mutex_lock(&hc->hc_mutex);
+  while (http_client_busy(hc)) {
+    pthread_mutex_unlock(&hc->hc_mutex);
+    tvh_safe_usleep(10000);
+    pthread_mutex_lock(&hc->hc_mutex);
+  }
   http_client_shutdown(hc, 1, 0);
   http_client_flush(hc, 0);
   tvhtrace(LS_HTTPC, "%04X: Closed", shortid(hc));

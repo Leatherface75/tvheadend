@@ -127,7 +127,6 @@ psip_update_table(psip_status_t *ps, uint16_t pid, int type)
     if (pt->pt_type != type && pt->pt_table) {
       mpegts_table_destroy(pt->pt_table);
       pt->pt_table = NULL;
-      ps->ps_refcount--;
       goto assign;
     }
     return pt;
@@ -382,7 +381,8 @@ _psip_eit_callback_channel
     if (title == NULL) continue;
 
     tvhtrace(LS_PSIP, "  %03d: [%s] eventid 0x%04x at %"PRItime_t", duration %d, title: '%s' (%d bytes)",
-             i, ch ? channel_get_name(ch) : "(null)", eventid, start, length,
+             i, ch ? channel_get_name(ch, channel_blank_name) : "(null)",
+             eventid, start, length,
              lang_str_get(title, NULL), titlelen);
 
     save2 = save3 = changes2 = changes3 = 0;
@@ -719,7 +719,7 @@ static int _psip_start
   /* Listen for Master Guide Table */
   mt = mpegts_table_add(dm, DVB_ATSC_MGT_BASE, DVB_ATSC_MGT_MASK,
                         _psip_mgt_callback, ps, "mgt", LS_TBL_EIT,
-                        MT_CRC | MT_QUICKREQ | MT_RECORD,
+                        MT_CRC | MT_RECORD,
                         DVB_ATSC_MGT_PID, MPS_WEIGHT_MGT);
   if (mt && !mt->mt_destroy) {
     ps->ps_refcount++;
